@@ -220,3 +220,70 @@ endinterface
 
     assert_eq!(ret, expect);
 }
+
+#[test]
+fn expand_case_statement() {
+    let code = r#"module ModuleA {
+    local y: bit = 1;
+
+    var a: logic;
+    let x: logic = 1;
+
+    always_comb {
+        case x {
+            0: a = 1;
+            1: a = 1;
+            2: {
+                   a = 1;
+                   a = 1;
+                   a = 1;
+               }
+            3, 4   : a = 1;
+            5..=7  : a = 1;
+            y - 1  : a = 1;
+            default: a = 1;
+        }
+    }
+}
+"#;
+
+    let expect = r#"module ModuleA;
+    localparam bit y = 1;
+
+    logic a;
+    logic x;
+    always_comb x = 1;
+
+    always_comb begin
+        case (1'b1)
+            (x) ==? (0): a = 1;
+            (x) ==? (1): a = 1;
+            (x) ==? (2): begin
+                             a = 1;
+                             a = 1;
+                             a = 1;
+                         end
+            (x) ==? (3), (x) ==? (4   ): a = 1;
+            ((x) >= (5)) && ((x) <= (7  )): a = 1;
+            (x) ==? (y - 1  ): a = 1;
+            default: a = 1;
+        endcase
+    end
+endmodule
+//# sourceMappingURL=test.sv.map
+"#;
+
+    let mut metadata: Metadata =
+        toml::from_str(&Metadata::create_default_toml("prj").unwrap()).unwrap();
+
+    metadata.build.omit_project_prefix = true;
+    metadata.build.expand_inside_operation = true;
+
+    let ret = if cfg!(windows) {
+        emit(&metadata, code).replace("\r\n", "\n")
+    } else {
+        emit(&metadata, code)
+    };
+
+    assert_eq!(ret, expect);
+}
