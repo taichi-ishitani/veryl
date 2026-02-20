@@ -802,12 +802,13 @@ impl VerylGrammarTrait for CreateSymbolTable {
         Ok(())
     }
 
-    fn statement_block(&mut self, _arg: &StatementBlock) -> Result<(), ParolError> {
+    fn statement_block(&mut self, arg: &StatementBlock) -> Result<(), ParolError> {
         match self.point {
             HandlerPoint::Before => {
                 let (_, name) = self.get_anonymous_block_name(None);
                 self.namespace.push(name);
                 self.affiliation.push(Affiliation::StatementBlock);
+                self.insert_namespace(&arg.l_brace.l_brace_token.token);
             }
             HandlerPoint::After => {
                 self.namespace.pop();

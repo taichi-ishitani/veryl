@@ -1,11 +1,10 @@
-use crate::conv::Context;
-use crate::conv::utils::check_compatibility;
+use crate::conv::{Context, Conv};
+use crate::conv::utils::{check_compatibility, get_func_definition};
 use crate::ir::assign_table::{AssignContext, AssignTable};
 use crate::ir::{
-    AssignDestination, Comptime, Expression, IrResult, Shape, Signature, Statement, Type,
-    ValueVariant, VarId, VarIndex, VarPath, VarPathSelect, VarSelect,
+    self, AssignDestination, Comptime, Expression, IrResult, Shape, Signature, Statement, ValueVariant, VarId, VarIndex, VarPath, VarPathSelect, VarSelect
 };
-use crate::symbol::{ClockDomain, Direction, Symbol, SymbolId, SymbolKind};
+use crate::symbol::{Affiliation, ClockDomain, Direction, Symbol, SymbolId, SymbolKind};
 use crate::value::{Value, ValueBigUint};
 use crate::{AnalyzerError, HashMap, ir_error};
 use indent::indent_all_by;
@@ -53,16 +52,6 @@ impl fmt::Display for FuncPath {
 }
 
 #[derive(Clone)]
-pub struct FuncProto {
-    pub name: StrId,
-    pub id: VarId,
-    pub ret: Option<Comptime>,
-    pub arity: usize,
-    pub args: Vec<FuncArg>,
-    pub token: TokenRange,
-}
-
-#[derive(Clone)]
 pub struct FuncArg {
     pub name: StrId,
     pub comptime: Comptime,
@@ -71,12 +60,17 @@ pub struct FuncArg {
 
 #[derive(Clone)]
 pub struct Function {
+    pub name: StrId,
     pub id: VarId,
     pub path: FuncPath,
-    pub r#type: Option<Type>,
+    pub r#type: Option<Comptime>,
     pub array: Shape,
+    pub arity: usize,
+    pub args: Vec<FuncArg>,
     pub constantable: bool,
     pub functions: Vec<FunctionBody>,
+    pub extracted: bool,
+    pub token: TokenRange,
 }
 
 impl Function {
@@ -96,26 +90,41 @@ impl Function {
         let index = self.array.calc_index(index)?;
         self.functions.get(index).cloned()
     }
-}
 
-#[derive(Clone)]
-pub struct FunctionBody {
-    pub ret: Option<VarId>,
-    pub arg_map: HashMap<VarPath, VarId>,
-    pub statements: Vec<Statement>,
-}
-
-impl FunctionBody {
-    pub fn eval_assign(&self, context: &mut Context, assign_table: &mut AssignTable) {
-        for x in &self.statements {
-            x.eval_assign(context, assign_table, AssignContext::Function, &[]);
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.functions {
+            x.resolve_func_call(context)?;
         }
+        Ok(())
     }
 
-    pub fn set_index(&mut self, index: &VarIndex) {
-        for x in &mut self.statements {
-            x.set_index(index);
-        }
+    pub fn extract_body(&mut self, context: &mut Context) -> IrResult<()>{
+        let def = get_func_definition(&self.path, self.token)?;
+
+        let hierarchy = context.drain_hierarchy();
+
+        context.set_hierarchy(&self.path.path.0);
+        context.push_affiliation(Affiliation::Function);
+        context.push_hierarchy(self.name);
+        context.push_generic_map(self.path.sig.to_generic_map());
+
+        let ret = context.block(|c| {
+            let mut statements: ir::StatementBlock =
+                Conv::conv(c, def.statement_block.as_ref())?;
+            if let Some(body) = self.functions.get_mut(0) {
+                body.statements.append(&mut statements.0);
+            }
+            Ok(())
+        });
+
+        context.pop_affiliation();
+        context.pop_hierarchy();
+        context.pop_generic_map();
+        context.set_hierarchy(&hierarchy);
+
+        self.extracted = true;
+
+        ret
     }
 }
 
@@ -147,14 +156,45 @@ impl fmt::Display for Function {
     }
 }
 
+#[derive(Clone)]
+pub struct FunctionBody {
+    pub ret: Option<VarId>,
+    pub arg_map: HashMap<VarPath, VarId>,
+    pub statements: Vec<Statement>,
+}
+
+impl FunctionBody {
+    pub fn eval_assign(&self, context: &mut Context, assign_table: &mut AssignTable) {
+        for x in &self.statements {
+            x.eval_assign(context, assign_table, AssignContext::Function, &[]);
+        }
+    }
+
+    pub fn set_index(&mut self, index: &VarIndex) {
+        for x in &mut self.statements {
+            x.set_index(index);
+        }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.statements {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct FunctionCall {
     pub id: VarId,
     pub index: Option<Vec<usize>>,
     pub ret: Option<Comptime>,
+    pub args: Arguments,
     pub inputs: HashMap<VarPath, Expression>,
     pub outputs: HashMap<VarPath, Vec<AssignDestination>>,
+    pub func_token: TokenRange,
     pub token: TokenRange,
+    pub resolved: bool,
 }
 
 impl FunctionCall {
@@ -189,6 +229,8 @@ impl FunctionCall {
     }
 
     pub fn eval_comptime(&mut self, context: &mut Context) -> Comptime {
+        context.extract_function_body(self.id);
+
         let value = self.eval_value(context);
         let value = if let Some(x) = value {
             ValueVariant::Numeric(x)
@@ -261,6 +303,30 @@ impl FunctionCall {
             }
         }
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        if self.resolved {
+            return Ok(())
+        }
+
+        if let Some(func) = context.functions.get(&self.id).cloned() {
+            let (inputs, outputs) = self
+                .args
+                .clone()
+                .to_function_args(context, &func, self.token)?;
+            self.inputs.extend(inputs);
+            self.outputs.extend(outputs);
+            self.ret = func.r#type;
+            self.resolved = true;
+        } else if !context.in_generic {
+            context.insert_error(AnalyzerError::referring_before_definition(
+                &self.func_token.beg.to_string(),
+                &self.func_token.into(),
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 impl fmt::Display for FunctionCall {
@@ -310,7 +376,7 @@ pub type FunctionArgs = (
     HashMap<VarPath, Vec<AssignDestination>>,
 );
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Arguments {
     Positional(PositionalArgs),
     Named(NamedArgs),
@@ -368,7 +434,7 @@ impl Arguments {
     pub fn to_function_args(
         self,
         context: &mut Context,
-        func: &FuncProto,
+        func: &Function,
         token: TokenRange,
     ) -> IrResult<FunctionArgs> {
         let mut inputs = HashMap::default();

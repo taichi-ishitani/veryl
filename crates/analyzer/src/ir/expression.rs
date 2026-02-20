@@ -3,8 +3,7 @@ use crate::conv::checker::clock_domain::check_clock_domain;
 use crate::conv::utils::eval_repeat;
 use crate::ir::assign_table::{AssignContext, AssignTable};
 use crate::ir::{
-    Comptime, FunctionCall, Op, Shape, SystemFunctionCall, Type, TypeKind, ValueVariant, VarId,
-    VarIndex, VarSelect,
+    Comptime, IrResult, FunctionCall, Op, Shape, SystemFunctionCall, Type, TypeKind, ValueVariant, VarId, VarIndex, VarSelect
 };
 use crate::symbol::ClockDomain;
 use crate::value::{Value, ValueBigUint};
@@ -612,6 +611,43 @@ impl Expression {
         }
     }
 
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        match self {
+            Expression::Term(x) => x.resolve_func_call(context),
+            Expression::Unary(_, x) => x.resolve_func_call(context),
+            Expression::Binary(x, _, y) => {
+                x.resolve_func_call(context)?;
+                y.resolve_func_call(context)
+            }
+            Expression::Ternary(x, y, z) => {
+                x.resolve_func_call(context)?;
+                y.resolve_func_call(context)?;
+                z.resolve_func_call(context)
+            }
+            Expression::Concatenation(x) => {
+                for (x, y) in x {
+                    x.resolve_func_call(context)?;
+                    if let Some(y) = y {
+                        y.resolve_func_call(context)?;
+                    }
+                }
+                Ok(())
+            }
+            Expression::ArrayLiteral(x) => {
+                for x in x {
+                    x.resolve_func_call(context)?;
+                }
+                Ok(())
+            }
+            Expression::StructConstructor(_, x) => {
+                for (_, x) in x {
+                    x.resolve_func_call(context)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
     pub fn token_range(&self) -> TokenRange {
         match self {
             Expression::Term(x) => x.token_range(),
@@ -657,10 +693,10 @@ impl Expression {
 
 #[derive(Clone, Debug)]
 pub enum Factor {
-    Variable(VarId, VarIndex, VarSelect, Comptime, TokenRange),
-    Value(Comptime, TokenRange),
+    Variable(VarId, VarIndex, VarSelect, Box<Comptime>, TokenRange),
+    Value(Box<Comptime>, TokenRange),
     SystemFunctionCall(SystemFunctionCall, TokenRange),
-    FunctionCall(FunctionCall, TokenRange),
+    FunctionCall(Box<FunctionCall>, TokenRange),
     Anonymous(TokenRange),
     Unresolved(ExpressionIdentifier, TokenRange),
     Unknown(TokenRange),
@@ -669,7 +705,7 @@ pub enum Factor {
 impl Factor {
     pub fn create_value(value: Value, token: TokenRange) -> Self {
         let comptime = Comptime::create_value(value, token);
-        Factor::Value(comptime, token)
+        Factor::Value(Box::new(comptime), token)
     }
 
     pub fn is_assignable(&self) -> bool {
@@ -715,7 +751,7 @@ impl Factor {
         let value = self.eval_value(context, context_width);
         match self {
             Factor::Variable(_, index, select, comptime, _) => {
-                let mut ret = comptime.clone();
+                let mut ret = *(comptime.clone());
 
                 let value = if let Some(x) = value {
                     ValueVariant::Numeric(x)
@@ -737,7 +773,7 @@ impl Factor {
                 ret.value = value;
                 ret
             }
-            Factor::Value(x, _) => x.clone(),
+            Factor::Value(x, _) => *x.clone(),
             Factor::SystemFunctionCall(x, _) => x.eval_comptime(context),
             Factor::FunctionCall(x, _) => x.eval_comptime(context),
             Factor::Anonymous(token) => {
@@ -804,9 +840,7 @@ impl Factor {
                     assign_table.insert_reference(&variable, index, mask);
                 }
             }
-            Factor::FunctionCall(x, _) => {
-                x.eval_assign(context, assign_table, assign_context);
-            }
+            Factor::FunctionCall(x, _) => x.eval_assign(context, assign_table, assign_context),
             Factor::SystemFunctionCall(x, _) => {
                 x.eval_assign(context, assign_table, assign_context);
             }
@@ -819,9 +853,7 @@ impl Factor {
             Factor::Variable(_, i, _, _, _) => {
                 *i = index.clone();
             }
-            Factor::FunctionCall(x, _) => {
-                x.set_index(index);
-            }
+            Factor::FunctionCall(x, _) => x.set_index(index),
             _ => (),
         }
     }
@@ -835,6 +867,18 @@ impl Factor {
             Factor::Anonymous(x) => *x,
             Factor::Unresolved(_, x) => *x,
             Factor::Unknown(x) => *x,
+        }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        match self {
+            Factor::Variable(_, index, select, _, _) => {
+                index.resolve_func_call(context)?;
+                select.resolve_func_call(context)
+            }
+            Factor::SystemFunctionCall(x, _) => x.resolve_func_call(context),
+            Factor::FunctionCall(x, _) => x.resolve_func_call(context),
+            _ => Ok(())
         }
     }
 }
@@ -909,6 +953,19 @@ impl ArrayLiteralItem {
                 ret
             }
             ArrayLiteralItem::Defaul(x) => x.eval_comptime(context, None).is_global,
+        }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        match self {
+            ArrayLiteralItem::Value(x, y) => {
+                x.resolve_func_call(context)?;
+                if let Some(y) = y {
+                    y.resolve_func_call(context)?;
+                }
+                Ok(())
+            }
+            ArrayLiteralItem::Defaul(x) => x.resolve_func_call(context),
         }
     }
 }
@@ -1173,7 +1230,7 @@ mod tests {
             ..Default::default()
         };
         Box::new(Expression::Term(Box::new(Factor::Value(
-            ret,
+            Box::new(ret),
             token_range(),
         ))))
     }
@@ -1189,7 +1246,7 @@ mod tests {
             ..Default::default()
         };
         Box::new(Expression::Term(Box::new(Factor::Value(
-            ret,
+            Box::new(ret),
             token_range(),
         ))))
     }
@@ -1207,7 +1264,7 @@ mod tests {
             ..Default::default()
         };
         Box::new(Expression::Term(Box::new(Factor::Value(
-            ret,
+            Box::new(ret),
             token_range(),
         ))))
     }

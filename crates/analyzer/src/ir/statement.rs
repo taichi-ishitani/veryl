@@ -2,13 +2,11 @@ use crate::AnalyzerError;
 use crate::conv::Context;
 use crate::ir::assign_table::{AssignContext, AssignTable};
 use crate::ir::utils::{allow_missing_reset_statement, has_cond_type};
-use crate::ir::{
-    Comptime, Expression, FunctionCall, SystemFunctionCall, VarId, VarIndex, VarPath, VarSelect,
-};
+use crate::ir::{Comptime, Expression, FunctionCall, IrResult, SystemFunctionCall, VarId, VarIndex, VarPath, VarSelect};
 use crate::value::ValueBigUint;
 use indent::indent_all_by;
-use std::borrow::Cow;
 use std::fmt;
+use std::borrow::Cow;
 use veryl_parser::token_range::TokenRange;
 
 #[derive(Clone, Default)]
@@ -72,6 +70,17 @@ impl Statement {
             Statement::Null => (),
         }
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        match self {
+            Statement::Assign(x) => x.resolve_func_call(context),
+            Statement::If(x) => x.resolve_func_call(context),
+            Statement::IfReset(x) => x.resolve_func_call(context),
+            Statement::SystemFunctionCall(x) => x.resolve_func_call(context),
+            Statement::FunctionCall(x) => x.resolve_func_call(context),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl fmt::Display for Statement {
@@ -86,6 +95,7 @@ impl fmt::Display for Statement {
         }
     }
 }
+
 
 #[derive(Clone, Debug)]
 pub struct AssignDestination {
@@ -177,6 +187,12 @@ impl AssignDestination {
     pub fn set_index(&mut self, index: &VarIndex) {
         self.index.add_prelude(index);
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        self.index.resolve_func_call(context)?;
+        self.select.resolve_func_call(context)?;
+        Ok(())
+    }
 }
 
 impl fmt::Display for AssignDestination {
@@ -227,6 +243,14 @@ impl AssignStatement {
             dst.set_index(index);
         }
         self.expr.set_index(index);
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for dst in &mut self.dst {
+            dst.resolve_func_call(context)?;
+        }
+        self.expr.resolve_func_call(context)?;
+        Ok(())
     }
 }
 
@@ -311,6 +335,17 @@ impl IfStatement {
             x.set_index(index);
         }
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        self.cond.resolve_func_call(context)?;
+        for x in &mut self.true_side {
+            x.resolve_func_call(context)?;
+        }
+        for x in &mut self.false_side {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for IfStatement {
@@ -380,6 +415,16 @@ impl IfResetStatement {
         for x in &mut self.false_side {
             x.set_index(index);
         }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.true_side {
+            x.resolve_func_call(context)?;
+        }
+        for x in &mut self.false_side {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
     }
 }
 

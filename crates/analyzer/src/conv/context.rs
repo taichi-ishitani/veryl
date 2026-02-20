@@ -1,8 +1,8 @@
 use crate::analyzer_error::{AnalyzerError, ExceedLimitKind};
 use crate::conv::instance::{InstanceHistory, InstanceHistoryError};
 use crate::ir::{
-    Component, Comptime, Declaration, Expression, FfClock, FfReset, FuncArg, FuncPath, FuncProto,
-    Function, Interface, IrResult, ShapeRef, Signature, Type, VarId, VarIndex, VarKind, VarPath,
+    Component, Comptime, Declaration, Expression, FfClock, FfReset, FuncPath, Function,
+    Interface, IrResult, ShapeRef, Signature, Type, VarId, VarIndex, VarKind, VarPath,
     VarSelect, Variable, VariableInfo,
 };
 use crate::namespace_table;
@@ -38,7 +38,7 @@ pub struct Context {
     pub config: Config,
     pub var_id: VarId,
     pub var_paths: HashMap<VarPath, (VarId, Comptime)>,
-    pub func_paths: HashMap<FuncPath, FuncProto>,
+    pub func_paths: HashMap<FuncPath, VarId>,
     pub variables: HashMap<VarId, Variable>,
     pub functions: HashMap<VarId, Function>,
     pub port_types: HashMap<VarPath, (Type, ClockDomain)>,
@@ -51,6 +51,7 @@ pub struct Context {
     pub select_dims: Vec<usize>,
     pub ignore_var_func: bool,
     pub in_if_reset: bool,
+    pub in_generic: bool,
     pub current_clock: Option<Comptime>,
     hierarchy: Vec<StrId>,
     hierarchical_variables: Vec<Vec<VarPath>>,
@@ -68,6 +69,8 @@ impl Context {
         std::mem::swap(&mut self.generic_maps, &mut tgt.generic_maps);
         std::mem::swap(&mut self.instance_history, &mut tgt.instance_history);
         std::mem::swap(&mut self.errors, &mut tgt.errors);
+        self.ignore_var_func = tgt.ignore_var_func;
+        self.in_generic = tgt.in_generic;
         self.config = tgt.config.clone();
     }
 
@@ -114,37 +117,30 @@ impl Context {
         }
     }
 
-    pub fn insert_func_path(
-        &mut self,
-        name: StrId,
-        path: FuncPath,
-        ret: Option<Comptime>,
-        arity: usize,
-        args: Vec<FuncArg>,
-        token: TokenRange,
-    ) -> VarId {
-        let id = self.var_id;
+    pub fn remove_const_paths(&mut self) {
+        for var in self.variables.values() {
+            if !matches!(var.kind, VarKind::Const) {
+                continue;
+            }
 
-        if let Some(x) = self.hierarchical_functions.last_mut() {
-            x.push(path.clone());
+            self.var_paths.remove(&var.path);
+
+            if let Some(x) = self.hierarchical_variables.last_mut()
+                && let Some(index) = x.iter().position(|x| *x == var.path)
+            {
+                x.remove(index);
+            }
         }
-
-        let proto = FuncProto {
-            name,
-            id,
-            ret,
-            arity,
-            args,
-            token,
-        };
-        self.func_paths.insert(path, proto);
-        self.var_id.inc();
-        id
     }
 
-    pub fn insert_func_args(&mut self, path: &FuncPath, args: Vec<FuncArg>) {
-        if let Some(x) = self.func_paths.get_mut(path) {
-            x.args = args;
+    pub fn restore_var_path(&mut self, path: VarPath) {
+        if let Some((id, var)) = self
+            .variables
+            .iter()
+            .find(|(_, var)| var.path == path)
+        {
+            let comptime = var.to_comptime();
+            self.insert_var_path_with_id(path, *id, comptime);
         }
     }
 
@@ -164,6 +160,13 @@ impl Context {
         self.port_types.insert(path, (r#type, clock_domain));
     }
 
+    pub fn insert_func_path(&mut self, path: FuncPath) -> VarId {
+        let id = self.var_id;
+        self.func_paths.insert(path, id);
+        self.var_id.inc();
+        id
+    }
+
     pub fn insert_function(&mut self, id: VarId, mut function: Function) {
         if self.ignore_var_func {
             return;
@@ -174,6 +177,27 @@ impl Context {
             function.path.add_prelude(hier);
         }
         self.functions.insert(id, function);
+    }
+
+    pub fn extract_function_body(&mut self, id: VarId) {
+        if let Some(func) = self.functions.get(&id)
+            && func.extracted
+        {
+            return;
+        }
+
+        if let Some(func) = self.functions.get_mut(&id) {
+            func.extracted = true;
+        }
+
+        if let Some(mut func) = self.functions.get(&id).cloned() {
+            let ret = func.extract_body(self);
+            if let Ok(_) = ret {
+                self.functions.insert(id, func);
+            } else {
+                self.insert_ir_error(&ret);
+            }
+        }
     }
 
     pub fn insert_declaration(&mut self, decl: Declaration) {
@@ -233,14 +257,12 @@ impl Context {
             self.variables.insert(id, variable);
         }
 
-        for (mut path, proto) in context.func_paths.drain() {
-            path.add_prelude(&base.0);
-            self.func_paths.insert(path, proto);
+        for (path, id) in context.func_paths.drain() {
+            self.func_paths.insert(path, id);
         }
 
-        for (id, mut function) in context.functions.drain() {
-            function.path.add_prelude(&base.0);
-
+        let functions: Vec<_> = context.functions.drain().collect();
+        for (id, mut function) in functions {
             if !array.is_empty() {
                 let total_array = array.total();
                 let func_body = function.functions.remove(0);
@@ -440,6 +462,24 @@ impl Context {
         self.hierarchy.push(x);
         self.hierarchical_variables.push(vec![]);
         self.hierarchical_functions.push(vec![]);
+
+        let import_vars: Vec<_> = self
+            .variables
+            .iter()
+            .filter_map(|(id, var)| {
+                if var.path.included(&self.hierarchy) {
+                    let mut path = var.path.clone();
+                    path.remove_prelude(&self.hierarchy);
+                    Some((*id, path, var.to_comptime()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, path, comptime) in import_vars {
+            println!("imported path {} {}", path, x);
+            self.insert_var_path_with_id(path, id, comptime);
+        }
     }
 
     pub fn pop_hierarchy(&mut self) {
@@ -462,6 +502,11 @@ impl Context {
                 self.func_paths.remove(&x);
             }
         }
+    }
+
+    pub fn set_hierarchy(&mut self, hierarchy: &[StrId]) {
+        self.hierarchy.clear();
+        self.hierarchy.extend(hierarchy);
     }
 
     pub fn push_affiliation(&mut self, x: Affiliation) {
@@ -496,8 +541,21 @@ impl Context {
         }
     }
 
+    pub fn in_affiliation(&self, value: Affiliation) -> bool {
+        self
+            .affiliation
+            .iter()
+            .any(|x| *x == value)
+    }
+
     pub fn get_affiliation(&self) -> Affiliation {
-        self.affiliation.last().copied().unwrap()
+        self
+            .affiliation
+            .iter()
+            .rev()
+            .find(|x| !matches!(x, Affiliation::StatementBlock))
+            .copied()
+            .unwrap()
     }
 
     pub fn find_path(&self, path: &VarPath) -> Option<(VarId, Comptime)> {
@@ -516,7 +574,7 @@ impl Context {
         self.var_paths.drain().collect()
     }
 
-    pub fn drain_func_paths(&mut self) -> HashMap<FuncPath, FuncProto> {
+    pub fn drain_func_paths(&mut self) -> HashMap<FuncPath, VarId> {
         self.func_paths.drain().collect()
     }
 
@@ -538,6 +596,10 @@ impl Context {
 
     pub fn drain_declarations(&mut self) -> Vec<Declaration> {
         self.declarations.drain(..).collect()
+    }
+
+    pub fn drain_hierarchy(&mut self) -> Vec<StrId> {
+        self.hierarchy.drain(..).collect()
     }
 
     pub fn drain_errors(&mut self) -> Vec<AnalyzerError> {

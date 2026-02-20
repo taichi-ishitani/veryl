@@ -64,6 +64,14 @@ impl Component {
             Component::SystemVerilog(_) => (),
         }
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        match self {
+            Component::Module(x) => x.resolve_func_call(context),
+            Component::Interface(x) => x.resolve_func_call(context),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl fmt::Display for Component {

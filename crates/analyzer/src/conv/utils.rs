@@ -6,8 +6,8 @@ use crate::conv::instance::InstanceHistoryError;
 use crate::conv::{Context, Conv};
 use crate::definition_table::{self, Definition};
 use crate::ir::{
-    self, Arguments, Comptime, FuncPath, FuncProto, IrResult, Op, PartSelectPath, Shape, ShapeRef,
-    Signature, ValueVariant, VarIndex, VarKind, VarPath, VarPathSelect, VarSelect, Variable,
+    self, Arguments, Comptime, FuncPath, IrResult, Op, PartSelectPath, Shape, ShapeRef, Signature,
+    ValueVariant, VarId, VarIndex, VarKind, VarPath, VarPathSelect, VarSelect, Variable,
 };
 use crate::symbol::{
     self, Affiliation, ClockDomain, EnumMemberValue, GenericBoundKind, ProtoBound, SymbolKind,
@@ -16,7 +16,7 @@ use crate::symbol::{
 use crate::symbol_path::GenericSymbolPath;
 use crate::symbol_table::{self, ResolveResult};
 use crate::value::Value;
-use crate::{HashMap, ir_error};
+use crate::{HashMap, ir_error, namespace_table};
 use veryl_parser::resource_table::{self, StrId};
 use veryl_parser::token_range::TokenRange;
 use veryl_parser::veryl_grammar_trait::*;
@@ -308,7 +308,7 @@ pub fn eval_assign_statement(
 
     check_clock_domain(context, &dst.comptime, comptime, &token.beg);
 
-    if context.is_affiliated(Affiliation::AlwaysFf)
+    if context.in_affiliation(Affiliation::AlwaysFf)
         && let Some(clock) = context.current_clock.clone()
     {
         check_clock_domain(context, &dst.comptime, &clock, &token.beg);
@@ -425,6 +425,7 @@ pub fn eval_const_assign(
                     path.clone(),
                     kind,
                     r#type.clone(),
+                    ClockDomain::None,
                     values,
                     context.get_affiliation(),
                     &dst.token,
@@ -462,6 +463,7 @@ pub fn eval_const_assign(
                         path.clone(),
                         kind,
                         r#type.clone(),
+                        ClockDomain::None,
                         vec![value],
                         context.get_affiliation(),
                         &dst.token,
@@ -523,6 +525,7 @@ pub fn eval_variable(
         path.clone(),
         kind,
         r#type.clone(),
+        clock_domain,
         values,
         context.get_affiliation(),
         &token,
@@ -562,7 +565,7 @@ pub fn eval_struct_member(
                     member_path.add_prelude(&path.0);
                     for x in r#type.expand_struct_union(&path, &[], None) {
                         if x.path == member_path {
-                            let comptime = expr.eval_comptime(context, None);
+                            let comptime = Box::new(expr.eval_comptime(context, None));
                             // TODO range select from PartSelect
                             return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(
                                 comptime, token,
@@ -580,6 +583,8 @@ pub fn eval_struct_member(
                     if x.path == member_path {
                         let mut comptime = Comptime::from_type(r#type, ClockDomain::None, token);
                         comptime.is_const = true;
+
+                        let comptime = Box::new(comptime);
                         return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(
                             comptime, token,
                         ))));
@@ -591,6 +596,8 @@ pub fn eval_struct_member(
                 GenericBoundKind::Type => {
                     let mut comptime = Comptime::create_unknown(ClockDomain::None, token);
                     comptime.is_const = true;
+
+                    let comptime = Box::new(comptime);
                     Ok(ir::Expression::Term(Box::new(ir::Factor::Value(
                         comptime, token,
                     ))))
@@ -599,6 +606,8 @@ pub fn eval_struct_member(
                     let r#type = x.to_ir_type(context, TypePosition::Variable)?;
                     let mut comptime = Comptime::from_type(r#type, ClockDomain::None, token);
                     comptime.is_const = true;
+
+                    let comptime = Box::new(comptime);
                     Ok(ir::Expression::Term(Box::new(ir::Factor::Value(
                         comptime, token,
                     ))))
@@ -1057,17 +1066,19 @@ pub fn eval_function_call(
                 )))
             }
             SymbolKind::Function(_) | SymbolKind::ModportFunctionMember(_) => {
-                let ret =
+                let func_call =
                     function_call(context, value.expression_identifier.as_ref(), args, token)?;
 
                 Ok(ir::Expression::Term(Box::new(ir::Factor::FunctionCall(
-                    ret, token,
+                    Box::new(func_call), token,
                 ))))
             }
             SymbolKind::SystemVerilog => {
                 let mut x = Comptime::create_unknown(ClockDomain::None, token);
                 x.is_const = true;
                 context.insert_ir_error::<()>(&Err(ir_error!(token)));
+
+                let x = Box::new(x);
                 Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))))
             }
             SymbolKind::ProtoFunction(_) => Err(ir_error!(token)),
@@ -1082,7 +1093,40 @@ pub fn eval_function_call(
         unreachable!();
     }
 }
+/*
+pub fn insert_generic_function_insts(
+    context: &mut Context,
+    value: &FunctionDeclaration,
+) -> IrResult<()> {
+    let Ok(symbol) = symbol_table::resolve(value.identifier.as_ref()) else {
+        return Ok(());
+    };
 
+    let func_paths: Vec<_> = context
+        .func_paths
+        .iter()
+        .filter_map(|(path, id)| {
+            if path.sig.is_generic()
+                && path.sig.symbol == symbol.found.id
+                && !context.functions.contains_key(id)
+            {
+                Some(path.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for path in &func_paths {
+        context.push_generic_map(path.sig.to_generic_map());
+        let ret: IrResult<()> = Conv::conv(context, (value, Some(path)));
+        context.pop_generic_map();
+        ret?;
+    }
+
+    Ok(())
+}
+*/
 pub fn eval_struct_constructor(
     context: &mut Context,
     value: &IdentifierFactor,
@@ -1158,6 +1202,7 @@ pub fn eval_external_symbol(
                     comptime.value.expand_value(width);
                 }
 
+                let comptime = Box::new(comptime);
                 return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(
                     comptime, token,
                 ))));
@@ -1194,6 +1239,7 @@ pub fn eval_external_symbol(
                     x.is_global = true;
                     x.r#type = r#type;
 
+                    let x = Box::new(x);
                     return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
                 }
             } else if matches!(x.bound, GenericBoundKind::Type) {
@@ -1208,6 +1254,7 @@ pub fn eval_external_symbol(
                 x.is_global = true;
                 x.r#type.kind = ir::TypeKind::Type;
 
+                let x = Box::new(x);
                 return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
             } else {
                 context.insert_error(AnalyzerError::invalid_factor(
@@ -1225,6 +1272,7 @@ pub fn eval_external_symbol(
             x.is_const = true;
             x.is_global = true;
 
+            let x = Box::new(x);
             return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
         }
         SymbolKind::ProtoTypeDef(_) => {
@@ -1233,6 +1281,7 @@ pub fn eval_external_symbol(
             x.is_const = true;
             x.is_global = true;
 
+            let x = Box::new(x);
             return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
         }
         SymbolKind::EnumMember(x) => {
@@ -1250,6 +1299,7 @@ pub fn eval_external_symbol(
                 }
                 EnumMemberValue::ExplicitValue(x, _) => {
                     let (x, _) = eval_expr(context, None, x, false)?;
+                    let x = Box::new(x);
                     return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
                 }
                 EnumMemberValue::UnevaluableValue => (),
@@ -1284,6 +1334,7 @@ pub fn eval_external_symbol(
             x.is_const = true;
             x.is_global = true;
 
+            let x = Box::new(x);
             return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
         }
         SymbolKind::Function(_) | SymbolKind::Module(_) | SymbolKind::SystemFunction(_) => {
@@ -1311,7 +1362,7 @@ pub fn eval_external_symbol(
             }
 
             let r#type = x.r#type.to_ir_type(context, TypePosition::Variable)?;
-            let x = Comptime::from_type(r#type, x.clock_domain, token);
+            let x = Box::new(Comptime::from_type(r#type, x.clock_domain, token));
 
             return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
         }
@@ -1338,6 +1389,7 @@ pub fn eval_external_symbol(
                 ..Default::default()
             };
 
+            let x = Box::new(x);
             return Ok(ir::Expression::Term(Box::new(ir::Factor::Value(x, token))));
         }
         _ => (),
@@ -1693,7 +1745,7 @@ pub fn get_port_connects(
                         var_id,
                         VarIndex::default(),
                         VarSelect::default(),
-                        comptime,
+                        Box::new(comptime),
                         token,
                     )))
                 } else {
@@ -1743,7 +1795,7 @@ pub fn get_port_connects(
             var_id,
             VarIndex::default(),
             VarSelect::default(),
-            comptime,
+            Box::new(comptime),
             token,
         )));
         let dst = vec![VarPathSelect(
@@ -1887,7 +1939,7 @@ pub fn expand_connect_const(
         for lhs in lhs_members {
             if lhs.1.is_output() {
                 let dst = VarPathSelect(lhs.0, lhs_select.clone(), lhs_token);
-                let src = ir::Factor::Value(comptime.clone(), token);
+                let src = ir::Factor::Value(Box::new(comptime.clone()), token);
                 let src = ir::Expression::Term(Box::new(src));
 
                 if let Some(dst) = dst.to_assign_destination(context, false) {
@@ -1926,52 +1978,114 @@ pub fn var_path_to_assign_destination(
         .collect()
 }
 
-fn get_function(context: &mut Context, path: &FuncPath, token: TokenRange) -> IrResult<FuncProto> {
-    if let Some(x) = context.func_paths.get(path) {
-        Ok(x.clone())
+pub fn insert_function(
+    context: &mut Context,
+    value: &FunctionDeclaration,
+    path: Option<&FuncPath>,
+    extract_body: bool,
+) -> IrResult<()> {
+    let array = if let Some(path) = path
+        && let Some((_, comptime)) = context.find_path(&path.path)
+    {
+        comptime.r#type.array
     } else {
+        Shape::default()
+    };
+
+    let base_path = if let Some(path) = path {
+        &path.path
+    } else {
+        &VarPath::default()
+    };
+
+    let mut local_context = Context::default();
+    local_context.var_id = context.var_id;
+    local_context.inherit(context);
+    local_context.extract_var_paths(context, base_path, &array);
+
+    let ret: IrResult<()> =
+        Conv::conv(&mut local_context, (value, path, extract_body));
+
+    context.extract_function(&mut local_context, base_path, &array);
+    context.inherit(&mut local_context);
+    context.var_id = local_context.var_id;
+
+    ret
+}
+
+fn get_function(
+    context: &mut Context,
+    path: &FuncPath,
+    is_local_func: bool,
+    token: TokenRange,
+) -> IrResult<VarId> {
+    if let Some(id) = context.func_paths.get(path) {
+        Ok(*id)
+    } else if is_local_func {
+        get_local_function(context, path, token)
+    } else {
+        get_external_function(context, path, token)
+    }
+}
+
+fn get_local_function(
+    context: &mut Context,
+    path: &FuncPath,
+    token: TokenRange,
+) -> IrResult<VarId> {
+    if context.func_paths.contains_key(&path.base()) {
+        // insert instanced generic function
+        let func_def = get_func_definition(path, token)?;
+        insert_function(context, &func_def, Some(path), false)?;
+
+        context
+            .func_paths
+            .get(path)
+            .cloned()
+            .ok_or_else(|| ir_error!(token))
+    } else {
+        // insert function path
+        let id = context.insert_func_path(path.clone());
+        Ok(id)
+    }
+}
+
+fn get_external_function(
+    context: &mut Context,
+    path: &FuncPath,
+    token: TokenRange,
+) -> IrResult<VarId> {
+    let func_def = get_func_definition(path, token)?;
+    insert_function(context, &func_def, Some(path), true)?;
+
+    context
+        .func_paths
+        .get(path)
+        .cloned()
+        .ok_or_else(|| ir_error!(token))
+}
+
+pub fn get_func_definition(path: &FuncPath, token: TokenRange) -> IrResult<FunctionDeclaration> {
+    let id = {
         let symbol = symbol_table::get(path.sig.symbol).unwrap();
-        let definition = match &symbol.kind {
+        match &symbol.kind {
             SymbolKind::Function(x) => x.definition.unwrap(),
             SymbolKind::ModportFunctionMember(x) => {
                 let symbol = symbol_table::get(x.function).unwrap();
-                let SymbolKind::Function(x) = symbol.kind else {
+                let SymbolKind::Function(x) = &symbol.kind else {
                     unreachable!();
                 };
                 x.definition.unwrap()
             }
             _ => return Err(ir_error!(token)),
-        };
+        }
+    };
 
-        let definition = definition_table::get(definition).unwrap();
-        let Definition::Function(definition) = definition else {
-            unreachable!()
-        };
-
-        let array = if let Some((_, comptime)) = context.find_path(&path.path) {
-            comptime.r#type.array
-        } else {
-            Shape::default()
-        };
-
-        let mut local_context = Context::default();
-        local_context.var_id = context.var_id;
-        local_context.inherit(context);
-        local_context.extract_var_paths(context, &path.path, &array);
-
-        let ret: IrResult<()> = Conv::conv(&mut local_context, &definition);
-
-        context.extract_function(&mut local_context, &path.path, &array);
-        context.inherit(&mut local_context);
-        context.var_id = local_context.var_id;
-
-        ret?;
-
-        context
-            .func_paths
-            .get(&path.base())
-            .cloned()
-            .ok_or_else(|| ir_error!(token))
+    let definition = definition_table::get(id).unwrap();
+    if let Definition::Function(x) = definition {
+        Ok(x)
+    } else {
+        unreachable!()
     }
 }
 
@@ -1982,12 +2096,19 @@ pub fn function_call(
     token: TokenRange,
 ) -> IrResult<ir::FunctionCall> {
     let generic_path: GenericSymbolPath = path.into();
+    let func_token: TokenRange = path.into();
 
     check_generic_args(context, &generic_path);
 
     let mut parent_path = generic_path.clone();
     parent_path.paths.pop();
     let sig = Signature::from_path(context, generic_path).ok_or_else(|| ir_error!(token))?;
+
+    let is_local_func = {
+        let namespace = namespace_table::get(path.identifier().token.id).unwrap();
+        let symbol = symbol_table::get(sig.symbol).unwrap();
+        namespace.included(&symbol.namespace)
+    };
 
     let path: VarPathSelect = Conv::conv(context, path)?;
     let (mut base_path, select, _) = path.into();
@@ -2027,19 +2148,25 @@ pub fn function_call(
     context.push_generic_map(map);
 
     let ret = context.block(|c| {
-        let proto = get_function(c, &path, token)?;
-        let (inputs, outputs) = args.to_function_args(c, &proto, token)?;
-        Ok(ir::FunctionCall {
-            id: proto.id,
+        let id = get_function(c, &path, is_local_func, token)?;
+        let mut func_call = ir::FunctionCall {
+            id,
             index,
-            ret: proto.ret,
-            inputs,
-            outputs,
+            ret: None,
+            args,
+            inputs: HashMap::default(),
+            outputs: HashMap::default(),
+            func_token,
             token,
-        })
+            resolved: false,
+        };
+
+        func_call.resolve_func_call(c)?;
+        Ok(func_call)
     });
 
     context.pop_generic_map();
+
     ret
 }
 

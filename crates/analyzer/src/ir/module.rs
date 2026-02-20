@@ -3,7 +3,7 @@ use crate::attribute::{AllowItem, Attribute};
 use crate::attribute_table;
 use crate::conv::Context;
 use crate::ir::assign_table::AssignTable;
-use crate::ir::{Declaration, Function, Type, VarId, VarIndex, VarPath, Variable};
+use crate::ir::{Declaration, Function, IrResult, Type, VarId, VarIndex, VarPath, Variable};
 use crate::symbol::ClockDomain;
 use indent::indent_all_by;
 use std::fmt;
@@ -70,13 +70,25 @@ impl Module {
                     ) {
                         let index = VarIndex::from_index(*index, &variable.r#type.array);
                         context.insert_error(crate::AnalyzerError::unassign_variable(
-                            &format!("{}{index}", variable.path),
+                            &format!("{}{}", variable.path, index),
                             &variable.token,
                         ));
                     }
                 }
             }
         }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for (_, f) in &mut self.functions {
+            f.resolve_func_call(context)?;
+        }
+
+        for d in &mut self.declarations {
+            d.resolve_func_call(context)?;
+        }
+
+        Ok(())
     }
 }
 

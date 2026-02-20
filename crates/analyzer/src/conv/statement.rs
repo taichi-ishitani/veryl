@@ -41,7 +41,7 @@ impl Conv<&StatementBlockItem> for ir::StatementBlock {
             }
             StatementBlockItem::LetStatement(x) => Conv::conv(context, x.let_statement.as_ref()),
             StatementBlockItem::ConstDeclaration(x) => {
-                let _: ir::Declaration = Conv::conv(context, x.const_declaration.as_ref())?;
+                let _: () = Conv::conv(context, x.const_declaration.as_ref())?;
                 Ok(ir::StatementBlock::default())
             }
             StatementBlockItem::Statement(x) => Conv::conv(context, x.statement.as_ref()),
@@ -636,6 +636,7 @@ impl Conv<&ForStatement> for ir::StatementBlock {
                     path,
                     kind,
                     comptime.r#type.clone(),
+                    clock_domain,
                     vec![comptime.get_value().unwrap().clone()],
                     c.get_affiliation(),
                     &token,

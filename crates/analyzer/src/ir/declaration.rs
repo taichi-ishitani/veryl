@@ -1,7 +1,7 @@
 use crate::conv::Context;
 use crate::ir::assign_table::{AssignContext, AssignTable};
 use crate::ir::{
-    AssignDestination, Component, Comptime, Expression, Statement, VarId, VarIndex, VarSelect,
+    AssignDestination, Component, Comptime, Expression, IrResult, Statement, VarId, VarIndex, VarSelect
 };
 use indent::indent_all_by;
 use std::fmt;
@@ -54,6 +54,17 @@ impl Declaration {
         }
         assign_table.refernced.clear();
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        match self {
+            Declaration::Comb(x) => x.resolve_func_call(context),
+            Declaration::Ff(x) => x.resolve_func_call(context),
+            Declaration::Inst(x) => x.resolve_func_call(context),
+            Declaration::Initial(x) => x.resolve_func_call(context),
+            Declaration::Final(x) => x.resolve_func_call(context),
+            _ => Ok(()),
+        }
+    }
 }
 
 impl fmt::Display for Declaration {
@@ -80,6 +91,13 @@ impl CombDeclaration {
             x.eval_assign(context, assign_table, AssignContext::Comb, &[]);
         }
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.statements {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for CombDeclaration {
@@ -104,6 +122,13 @@ pub struct FfClock {
     pub comptime: Comptime,
 }
 
+impl FfClock {
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        self.index.resolve_func_call(context)?;
+        self.select.resolve_func_call(context)
+    }
+}
+
 impl fmt::Display for FfClock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         format!("{}{}{}", self.id, self.index, self.select).fmt(f)
@@ -116,6 +141,13 @@ pub struct FfReset {
     pub index: VarIndex,
     pub select: VarSelect,
     pub comptime: Comptime,
+}
+
+impl FfReset {
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        self.index.resolve_func_call(context)?;
+        self.select.resolve_func_call(context)
+    }
 }
 
 impl fmt::Display for FfReset {
@@ -136,6 +168,19 @@ impl FfDeclaration {
         for x in &self.statements {
             x.eval_assign(context, assign_table, AssignContext::Ff, &[]);
         }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        self.clock.resolve_func_call(context)?;
+        if let Some(x) = &mut self.reset {
+            x.resolve_func_call(context)?;
+        }
+
+        for x in &mut self.statements {
+            x.resolve_func_call(context)?;
+        }
+
+        Ok(())
     }
 }
 
@@ -163,6 +208,12 @@ pub struct InstInput {
     pub expr: Expression,
 }
 
+impl InstInput {
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        self.expr.resolve_func_call(context)
+    }
+}
+
 impl fmt::Display for InstInput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut ret = String::new();
@@ -187,6 +238,15 @@ impl fmt::Display for InstInput {
 pub struct InstOutput {
     pub id: Vec<VarId>,
     pub dst: Vec<AssignDestination>,
+}
+
+impl InstOutput {
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.dst {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for InstOutput {
@@ -241,6 +301,16 @@ impl InstDeclaration {
             }
         }
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.inputs {
+            x.resolve_func_call(context)?;
+        }
+        for x in &mut self.outputs {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for InstDeclaration {
@@ -278,6 +348,13 @@ impl InitialDeclaration {
             x.eval_assign(context, assign_table, AssignContext::Initial, &[]);
         }
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.statements {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for InitialDeclaration {
@@ -304,6 +381,13 @@ impl FinalDeclaration {
         for x in &self.statements {
             x.eval_assign(context, assign_table, AssignContext::Final, &[]);
         }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.statements {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
     }
 }
 

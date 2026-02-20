@@ -2,8 +2,9 @@ use crate::BigUint;
 use crate::analyzer_error::{AnalyzerError, InvalidSelectKind};
 use crate::conv::Context;
 use crate::conv::utils::eval_width_select;
-use crate::ir::{AssignDestination, Expression, Factor, Op, Shape, ShapeRef, Type, TypeKind};
+use crate::ir::{AssignDestination, Comptime, Expression, Factor, IrResult, Op, Shape, ShapeRef, Type, TypeKind};
 use crate::symbol::Affiliation;
+use crate::symbol::ClockDomain as SymClockDomain;
 use crate::value::{Value, ValueBigUint};
 use std::fmt;
 use veryl_parser::resource_table::StrId;
@@ -106,6 +107,7 @@ impl VarPathSelect {
             let (array_select, width_select) = select.split(comptime.r#type.array.dims());
             comptime.r#type.array.drain(0..array_select.dimension());
 
+            let comptime = Box::new(comptime);
             let src = Factor::Variable(id, array_select.to_index(), width_select, comptime, token);
             Some(Expression::Term(Box::new(src)))
         } else {
@@ -158,6 +160,21 @@ impl VarPath {
     }
     pub fn first(&self) -> StrId {
         self.0[0]
+    }
+    pub fn included(&self, x: &[StrId]) -> bool {
+        for (i, x) in x.iter().enumerate() {
+            if let Some(path) = self.0.get(i) {
+                if path != x {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    }
+    pub fn strip_anonymous_path(&mut self) {
+        self.0.retain(|x| x.to_string().find('@').is_none())
     }
 }
 
@@ -244,6 +261,13 @@ impl VarIndex {
 
     pub fn to_select(self) -> VarSelect {
         VarSelect(self.0, None)
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for i in &mut self.0 {
+            i.resolve_func_call(context)?;
+        }
+        Ok(())
     }
 }
 
@@ -622,6 +646,13 @@ impl VarSelect {
 
         Some((beg, end))
     }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.0 {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for VarSelect {
@@ -698,6 +729,7 @@ pub struct Variable {
     pub path: VarPath,
     pub kind: VarKind,
     pub r#type: Type,
+    pub clock_domain: SymClockDomain,
     pub value: Vec<Value>,
     pub assigned: Vec<BigUint>,
     pub affiliation: Affiliation,
@@ -710,6 +742,7 @@ impl Variable {
         path: VarPath,
         kind: VarKind,
         r#type: Type,
+        clock_domain: SymClockDomain,
         value: Vec<Value>,
         affiliation: Affiliation,
         token: &TokenRange,
@@ -724,6 +757,7 @@ impl Variable {
             path,
             kind,
             r#type,
+            clock_domain,
             value,
             assigned,
             affiliation,
@@ -809,6 +843,12 @@ impl Variable {
             }
             self.r#type.prepend_array(array);
         }
+    }
+
+    pub fn to_comptime(&self) -> Comptime {
+        let mut comptime = Comptime::from_type(self.r#type.clone(), self.clock_domain, self.token);
+        comptime.is_const = matches!(self.kind, VarKind::Param | VarKind::Const);
+        comptime
     }
 }
 

@@ -1,6 +1,6 @@
-use crate::HashMap;
-use crate::ir::{Comptime, FuncPath, FuncProto, Function, VarId, VarPath, Variable};
+use crate::ir::{Comptime, FuncPath, Function, IrResult, VarId, VarPath, Variable};
 use crate::symbol::Direction;
+use crate::{Context, HashMap};
 use indent::indent_all_by;
 use std::fmt;
 use veryl_parser::resource_table::StrId;
@@ -9,7 +9,7 @@ use veryl_parser::resource_table::StrId;
 pub struct Interface {
     pub name: StrId,
     pub var_paths: HashMap<VarPath, (VarId, Comptime)>,
-    pub func_paths: HashMap<FuncPath, FuncProto>,
+    pub func_paths: HashMap<FuncPath, VarId>,
     pub variables: HashMap<VarId, Variable>,
     pub functions: HashMap<VarId, Function>,
     pub modports: HashMap<StrId, Vec<(StrId, Direction)>>,
@@ -24,6 +24,13 @@ impl Interface {
             }
         }
         ret
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for (_, f) in &mut self.functions {
+            f.resolve_func_call(context)?;
+        }
+        Ok(())
     }
 }
 

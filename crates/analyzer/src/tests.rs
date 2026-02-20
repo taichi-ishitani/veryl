@@ -1651,9 +1651,9 @@ fn mismatch_function_arity() {
         ) -> logic {
             return 0;
         }
-    
+
         inst u: $sv::IF;
-    
+
         always_comb {
             u.a = func(1'b1);
         }
@@ -3636,6 +3636,10 @@ fn mismatch_type() {
         const W: u32;
         type  T;
     }
+    package Pkg::<WIDTH: u32> for ProtoPkg {
+        const W: u32 = WIDTH;
+        type T = logic<W>;
+    }
     module ModuleA::<PKG: ProtoPkg, WIDTH: u32, TYPE: type> {
         function FuncA::<W: u32>() -> logic<W> {
             return 0;
@@ -3648,6 +3652,7 @@ fn mismatch_type() {
         let _b_0: u32 = FuncB::<PKG::T>();
         let _b_1: u32 = FuncB::<TYPE>();
     }
+    alias module Module = ModuleA::<Pkg::<32>, Pkg::<16>::W, Pkg::<8>::T>;
     "#;
 
     let errors = analyze(code);
@@ -3670,12 +3675,12 @@ fn mismatch_type() {
 
     let code = r#"
     proto package ProtoPkg {
-    const A: u32;
+        const A: u32;
     }
 
     module ModuleA::<PKG: ProtoPkg> {
-    import PKG::*;
-    let _a: u32 = 0 as A;
+        import PKG::*;
+        let _a: u32 = 0 as A;
     }
     "#;
 
@@ -3684,15 +3689,15 @@ fn mismatch_type() {
 
     let code = r#"
     package Pkg for ProtoPkg {
-    const V: u32 = 0;
+        const V: u32 = 0;
     }
     proto package ProtoPkg {
-    const V: u32;
+        const V: u32;
     }
     module Sub::<PKG: ProtoPkg> {
     }
     module Top {
-    inst u_sub: Sub::<Pkg>;
+        inst u_sub: Sub::<Pkg>;
     }
     "#;
 
@@ -5380,6 +5385,61 @@ fn referring_before_definition() {
 
     let errors = analyze(code);
     assert!(errors.is_empty());
+
+    let code = r#"
+    module ModuleA (
+        i_clk: input clock,
+    ) {
+        var a: logic<4>;
+        always_ff {
+            if get_b() {
+                a = get_c::<4>();
+            }
+        }
+        let b: logic = '1;
+        function get_b() -> logic {
+            return b;
+        }
+        let c: logic = '1;
+        function get_c::<W: u32>() -> logic<W> {
+            return c as W;
+        }
+    }
+    "#;
+
+    let errors = analyze(code);
+    assert!(errors.is_empty());
+
+    let code = r#"
+    module ModuleA {
+        const A: u32 = get_b();
+        const B: u32 = 1;
+        function get_b() -> u32 {
+            return B;
+        }
+    }
+    "#;
+
+    let errors = analyze(code);
+    assert!(matches!(
+        errors[0],
+        AnalyzerError::ReferringBeforeDefinition { .. }
+    ));
+
+    let code = r#"
+    module ModuleA {
+        let _a: logic<get_w()> = 1;
+        function get_w() -> u32 {
+            return 8;
+        }
+    }
+    "#;
+
+    let errors = analyze(code);
+    assert!(matches!(
+        errors[0],
+        AnalyzerError::ReferringBeforeDefinition { .. }
+    ));
 }
 
 #[test]
@@ -7042,6 +7102,25 @@ fn unassign_variable() {
         always_ff {
             if if_a.get_a() {
                 d = '1;
+            }
+        }
+    }
+    "#;
+
+    let errors = analyze(code);
+    assert!(errors.is_empty());
+
+    let code = r#"
+    module ModuleA #(
+        param N: u32 = 4,
+    ) {
+        always_comb {
+            f();
+        }
+        function f() {
+            var a: u32;
+            for _i: u32 in 0..N {
+                a = 0;
             }
         }
     }

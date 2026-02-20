@@ -11,8 +11,8 @@ use crate::conv::checker::port::{check_direction, check_port_default_value, chec
 use crate::conv::utils::{
     TypePosition, eval_assign_statement, eval_clock, eval_const_assign, eval_expr, eval_for_range,
     eval_reset, eval_size, eval_type, eval_variable, expand_connect, expand_connect_const,
-    get_component, get_overridden_params, get_port_connects, get_return_str, insert_port_connect,
-    var_path_to_assign_destination,
+    get_component, get_overridden_params, get_port_connects, get_return_str,
+    insert_function, insert_port_connect, var_path_to_assign_destination,
 };
 use crate::conv::{Affiliation, Context, Conv};
 use crate::ir::{
@@ -28,6 +28,33 @@ use crate::{HashMap, ir_error};
 use veryl_parser::resource_table::{self, StrId};
 use veryl_parser::token_range::TokenRange;
 use veryl_parser::veryl_grammar_trait::*;
+
+impl Conv<&GenerateItem> for () {
+    fn conv(context: &mut Context, value: &GenerateItem) -> IrResult<Self> {
+        match value {
+            GenerateItem::GenerateIfDeclaration(x) => Conv::conv(
+                context,
+                x.generate_if_declaration.as_ref(),
+            ),
+            GenerateItem::GenerateForDeclaration(x) => Conv::conv(
+                context,
+                x.generate_for_declaration.as_ref(),
+            ),
+            GenerateItem::GenerateBlockDeclaration(x) => Conv::conv(
+                context,
+                x.generate_block_declaration.generate_named_block.as_ref(),
+            ),
+            GenerateItem::ConstDeclaration(x) => Conv::conv(context, x.const_declaration.as_ref()),
+            GenerateItem::FunctionDeclaration(x) => Conv::conv(context, x.function_declaration.as_ref()),
+            GenerateItem::UnsafeBlock(x) => Conv::conv(context, x.unsafe_block.as_ref()),
+            GenerateItem::ImportDeclaration(x) => Conv::conv(
+                context,
+                x.import_declaration.as_ref(),
+            ),
+            _ => Ok(())
+        }
+    }
+}
 
 impl Conv<&GenerateItem> for ir::DeclarationBlock {
     fn conv(context: &mut Context, value: &GenerateItem) -> IrResult<Self> {
@@ -58,35 +85,36 @@ impl Conv<&GenerateItem> for ir::DeclarationBlock {
                 context,
                 x.generate_block_declaration.generate_named_block.as_ref(),
             ),
-            GenerateItem::ConstDeclaration(x) => Ok(ir::DeclarationBlock::new(Conv::conv(
-                context,
-                x.const_declaration.as_ref(),
-            )?)),
             GenerateItem::AssignDeclaration(x) => Ok(ir::DeclarationBlock::new(Conv::conv(
                 context,
                 x.assign_declaration.as_ref(),
             )?)),
+            GenerateItem::ConstDeclaration(x) => {
+                if let Ok(symbol) = symbol_table::resolve(x.const_declaration.identifier.as_ref())
+                    && matches!(symbol.found.kind, SymbolKind::Parameter(_))
+                {
+                    let path = VarPath::new(symbol.found.token.text);
+                    context.restore_var_path(path);
+                }
+                Ok(ir::DeclarationBlock::default())
+            }
             GenerateItem::FunctionDeclaration(x) => {
-                // ignore IrError of generic function
-                let use_ir = context.config.use_ir;
-                if x.function_declaration.function_declaration_opt.is_some() {
-                    context.config.use_ir = false;
-                    context.ignore_var_func = true;
+                if let Ok(symbol) = symbol_table::resolve(x.function_declaration.identifier.as_ref()) {
+                    let func_ids: Vec<_> = context
+                        .functions
+                        .iter()
+                        .filter_map(|(id, func)| {
+                            if func.path.sig.symbol == symbol.found.id {
+                                Some(*id)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    for func_id in &func_ids {
+                        context.extract_function_body(*func_id);
+                    }
                 }
-
-                let ret = context.block(|c| {
-                    let ret: () = Conv::conv(c, x.function_declaration.as_ref())?;
-                    Ok(ret)
-                });
-
-                if x.function_declaration.function_declaration_opt.is_some() {
-                    context.config.use_ir = use_ir;
-                    context.ignore_var_func = false;
-                } else {
-                    // check IrError for non-generic function
-                    ret?;
-                }
-
                 Ok(ir::DeclarationBlock::default())
             }
             GenerateItem::StructUnionDeclaration(x) => {
@@ -113,9 +141,6 @@ impl Conv<&GenerateItem> for ir::DeclarationBlock {
                 Conv::conv(context, x.connect_declaration.as_ref())
             }
             GenerateItem::UnsafeBlock(x) => Conv::conv(context, x.unsafe_block.as_ref()),
-            GenerateItem::ImportDeclaration(x) => {
-                Conv::conv(context, x.import_declaration.as_ref())
-            }
             GenerateItem::BindDeclaration(x) => {
                 let _: () = Conv::conv(context, x.bind_declaration.as_ref())?;
                 Ok(ir::DeclarationBlock::default())
@@ -132,6 +157,7 @@ impl Conv<&GenerateItem> for ir::DeclarationBlock {
                 let _: () = Conv::conv(context, x.embed_declaration.as_ref())?;
                 Ok(ir::DeclarationBlock::default())
             }
+            _ => Ok(ir::DeclarationBlock::default()),
         }
     }
 }
@@ -141,6 +167,63 @@ fn get_label(block: &GenerateOptionalNamedBlock, default: StrId) -> StrId {
         x.identifier.text()
     } else {
         default
+    }
+}
+
+impl Conv<&GenerateIfDeclaration> for () {
+    fn conv(context: &mut Context, value: &GenerateIfDeclaration) -> IrResult<Self> {
+        let label = value.generate_named_block.identifier.text();
+
+        let (comptime, _) = eval_expr(context, None, value.expression.as_ref(), false)?;
+        let cond = comptime.get_value()?;
+
+        if cond.to_usize().unwrap_or(0) != 0 {
+            context.push_hierarchy(label);
+
+            let block = context.block(|c| {
+                let block: () = Conv::conv(c, value.generate_named_block.as_ref())?;
+                Ok(block)
+            });
+
+            context.pop_hierarchy();
+            block
+        } else {
+            for x in &value.generate_if_declaration_list {
+                let (comptime, _) = eval_expr(context, None, x.expression.as_ref(), false)?;
+                let cond = comptime.get_value()?;
+
+                if cond.to_usize().unwrap_or(0) != 0 {
+                    let label = get_label(&x.generate_optional_named_block, label);
+
+                    context.push_hierarchy(label);
+
+                    let block = context.block(|c| {
+                        let block: () =
+                            Conv::conv(c, x.generate_optional_named_block.as_ref())?;
+                        Ok(block)
+                    });
+
+                    context.pop_hierarchy();
+                    return block;
+                }
+            }
+
+            if let Some(x) = &value.generate_if_declaration_opt {
+                let label = get_label(&x.generate_optional_named_block, label);
+                context.push_hierarchy(label);
+
+                let block = context.block(|c| {
+                    let block: () =
+                        Conv::conv(c, x.generate_optional_named_block.as_ref())?;
+                    Ok(block)
+                });
+
+                context.pop_hierarchy();
+                block
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -204,6 +287,19 @@ impl Conv<&GenerateIfDeclaration> for ir::DeclarationBlock {
     }
 }
 
+impl Conv<&GenerateNamedBlock> for () {
+    fn conv(context: &mut Context, value: &GenerateNamedBlock) -> IrResult<Self> {
+        for x in &value.generate_named_block_list {
+            let items: Vec<_> = x.generate_group.as_ref().into();
+            for item in items {
+                let item: IrResult<()> = Conv::conv(context, item);
+                context.insert_ir_error(&item);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Conv<&GenerateNamedBlock> for ir::DeclarationBlock {
     fn conv(context: &mut Context, value: &GenerateNamedBlock) -> IrResult<Self> {
         let mut ret = vec![];
@@ -219,6 +315,19 @@ impl Conv<&GenerateNamedBlock> for ir::DeclarationBlock {
             }
         }
         Ok(ir::DeclarationBlock(ret))
+    }
+}
+
+impl Conv<&GenerateOptionalNamedBlock> for () {
+    fn conv(context: &mut Context, value: &GenerateOptionalNamedBlock) -> IrResult<Self> {
+        for x in &value.generate_optional_named_block_list {
+            let items: Vec<_> = x.generate_group.as_ref().into();
+            for item in items {
+                let item: IrResult<()> = Conv::conv(context, item);
+                context.insert_ir_error(&item);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -240,6 +349,57 @@ impl Conv<&GenerateOptionalNamedBlock> for ir::DeclarationBlock {
     }
 }
 
+impl Conv<&GenerateForDeclaration> for () {
+    fn conv(context: &mut Context, value: &GenerateForDeclaration) -> IrResult<Self> {
+        let token: TokenRange = (&value.identifier.identifier_token).into();
+        let label = value.generate_named_block.identifier.text();
+
+        let rev = value.generate_for_declaration_opt.is_some();
+        let step = value
+            .generate_for_declaration_opt0
+            .as_ref()
+            .map(|x| (x.assignment_operator.as_ref(), x.expression.as_ref()));
+
+        let range = eval_for_range(context, &value.range, rev, step, token)?;
+        for i in range {
+            let label = format!("{}[{}]", label, i);
+            let label = resource_table::insert_str(&label);
+
+            let index = value.identifier.text();
+            let path = VarPath::new(index);
+            let kind = VarKind::Const;
+            let comptime = Comptime::create_value(Value::new(i as u64, 32, false), token);
+
+            context.push_hierarchy(label);
+
+            let _ = context.block(|c| {
+                let id = c.insert_var_path(path.clone(), comptime.clone());
+                let clock_domain = comptime.clock_domain;
+                let variable = Variable::new(
+                    id,
+                    path,
+                    kind,
+                    comptime.r#type.clone(),
+                    clock_domain,
+                    vec![comptime.get_value().unwrap().clone()],
+                    c.get_affiliation(),
+                    &token,
+                );
+                c.insert_variable(id, variable);
+
+                let block: IrResult<()> =
+                    Conv::conv(c, value.generate_named_block.as_ref());
+                c.insert_ir_error(&block);
+                block
+            });
+
+            context.pop_hierarchy();
+        }
+
+        Ok(())
+    }
+}
+
 impl Conv<&GenerateForDeclaration> for ir::DeclarationBlock {
     fn conv(context: &mut Context, value: &GenerateForDeclaration) -> IrResult<Self> {
         let token: TokenRange = (&value.identifier.identifier_token).into();
@@ -258,27 +418,9 @@ impl Conv<&GenerateForDeclaration> for ir::DeclarationBlock {
         for i in range {
             let label = format!("{}[{}]", label, i);
             let label = resource_table::insert_str(&label);
-
-            let index = value.identifier.text();
-            let path = VarPath::new(index);
-            let kind = VarKind::Const;
-            let comptime = Comptime::create_value(Value::new(i as u64, 32, false), token);
-
             context.push_hierarchy(label);
 
             let block = context.block(|c| {
-                let id = c.insert_var_path(path.clone(), comptime.clone());
-                let variable = Variable::new(
-                    id,
-                    path,
-                    kind,
-                    comptime.r#type.clone(),
-                    vec![comptime.get_value().unwrap().clone()],
-                    c.get_affiliation(),
-                    &token,
-                );
-                c.insert_variable(id, variable);
-
                 let block: IrResult<ir::DeclarationBlock> =
                     Conv::conv(c, value.generate_named_block.as_ref());
                 c.insert_ir_error(&block);
@@ -507,12 +649,14 @@ impl Conv<&PortDeclarationItem> for () {
                 comptime.r#type = r#type.clone();
 
                 // TODO for array
+                let clock_domain = comptime.clock_domain;
                 let id = context.insert_var_path(path.clone(), comptime);
                 let variable = Variable::new(
                     id,
                     path,
                     kind,
                     r#type,
+                    clock_domain,
                     vec![value.clone()],
                     context.get_affiliation(),
                     &variable_token,
@@ -637,11 +781,11 @@ impl Conv<&LetDeclaration> for ir::Declaration {
     }
 }
 
-impl Conv<&ConstDeclaration> for ir::Declaration {
+impl Conv<&ConstDeclaration> for () {
     fn conv(context: &mut Context, value: &ConstDeclaration) -> IrResult<Self> {
         let define_context: DefineContext = (&value.r#const.const_token).into();
         if !define_context.is_default() {
-            return Ok(ir::Declaration::Null);
+            return Ok(());
         }
 
         let token: TokenRange = value.into();
@@ -682,7 +826,7 @@ impl Conv<&ConstDeclaration> for ir::Declaration {
 
             eval_const_assign(context, kind, &dst, &mut (comptime, expr))?;
 
-            Ok(ir::Declaration::Null)
+            Ok(())
         } else {
             Err(ir_error!(token))
         }
@@ -788,17 +932,19 @@ impl Conv<&AssignDeclaration> for ir::Declaration {
     }
 }
 
-impl Conv<&FunctionDeclaration> for () {
-    fn conv(context: &mut Context, value: &FunctionDeclaration) -> IrResult<Self> {
-        let name = value.identifier.text();
+impl Conv<(&FunctionDeclaration, Option<&FuncPath>, bool)> for () {
+    fn conv(
+        context: &mut Context,
+        value: (&FunctionDeclaration, Option<&FuncPath>, bool),
+    ) -> IrResult<Self> {
+        let (func_def, path, extract_body) = value;
+        let token: TokenRange = (&func_def.identifier.identifier_token).into();
 
-        let token: TokenRange = (&value.identifier.identifier_token).into();
-
-        if let Some(x) = &value.function_declaration_opt {
+        if let Some(x) = &func_def.function_declaration_opt {
             check_generic_bound(context, &x.with_generic_parameter);
         }
 
-        if let Ok(symbol) = symbol_table::resolve(value.identifier.as_ref())
+        if let Ok(symbol) = symbol_table::resolve(func_def.identifier.as_ref())
             && let SymbolKind::Function(x) = symbol.found.kind
         {
             let constantable = x.constantable.unwrap();
@@ -818,7 +964,7 @@ impl Conv<&FunctionDeclaration> for () {
                 None
             };
 
-            let arg_items: Vec<_> = if let Some(x) = &value.function_declaration_opt0
+            let arg_items: Vec<_> = if let Some(x) = &func_def.function_declaration_opt0
                 && let Some(x) = &x.port_declaration.port_declaration_opt
             {
                 x.port_declaration_list.as_ref().into()
@@ -828,16 +974,25 @@ impl Conv<&FunctionDeclaration> for () {
 
             // insert VarPath for function before statement_block conv
             // because it may be refered by recursive function
-            let path = FuncPath::new(symbol.found.id);
+            let (path, name) = if let Some(path) = path {
+                let name = resource_table::insert_str(&path.sig.to_string());
+                (path.clone(), name)
+            } else {
+                (FuncPath::new(symbol.found.id), func_def.identifier.text())
+            };
+            let id = if let Some(id) = context.func_paths.get(&path) {
+                *id
+            } else {
+                context.insert_func_path(path.clone())
+            };
             let arity = arg_items.len();
-            let args = vec![]; // args are collected later
             let token: TokenRange = symbol.found.token.into();
-            let id =
-                context.insert_func_path(name, path.clone(), ret_type.clone(), arity, args, token);
 
             context.push_affiliation(Affiliation::Function);
             context.push_hierarchy(name);
 
+            let mut arg_map = HashMap::default();
+            let mut args = vec![];
             let body = context.block(|c| {
                 // insert return value as variable
                 let ret_id = if let Some(ret_type) = ret_type.clone() {
@@ -855,12 +1010,14 @@ impl Conv<&FunctionDeclaration> for () {
                             values.push(Value::new_x(total_width, false));
                         }
 
+                        let clock_domain = ret_type.clock_domain;
                         let ret_id = c.insert_var_path(path.clone(), ret_type);
                         let variable = Variable::new(
                             ret_id,
                             path,
                             kind,
                             r#type,
+                            clock_domain,
                             values,
                             c.get_affiliation(),
                             &token,
@@ -873,9 +1030,6 @@ impl Conv<&FunctionDeclaration> for () {
                 } else {
                     None
                 };
-
-                let mut arg_map = HashMap::default();
-                let mut args = vec![];
 
                 for item in arg_items {
                     let ret: IrResult<()> = Conv::conv(c, item);
@@ -923,28 +1077,38 @@ impl Conv<&FunctionDeclaration> for () {
                     }
                 }
 
-                c.insert_func_args(&path, args);
+                let statements = if extract_body {
+                    let statements: ir::StatementBlock =
+                        Conv::conv(c, func_def.statement_block.as_ref())?;
+                    statements.0
+                } else {
+                    vec![]
+                };
 
-                let statements: ir::StatementBlock = Conv::conv(c, value.statement_block.as_ref())?;
-
-                Ok(ir::FunctionBody {
+                let body = ir::FunctionBody {
                     ret: ret_id,
                     arg_map,
-                    statements: statements.0,
-                })
+                    statements,
+                };
+                Ok(body)
             });
 
             context.pop_affiliation();
             context.pop_hierarchy();
 
-            let r#type = ret_type.as_ref().map(|x| x.r#type.clone());
+            let r#type = ret_type.as_ref().cloned();
             let function = ir::Function {
+                name,
                 id,
                 path,
                 r#type,
                 array: Shape::default(),
+                arity,
+                args,
                 constantable,
                 functions: vec![body?],
+                extracted: extract_body,
+                token,
             };
 
             // function should be inserted outside the function scope
@@ -952,6 +1116,30 @@ impl Conv<&FunctionDeclaration> for () {
             Ok(())
         } else {
             Err(ir_error!(token))
+        }
+    }
+}
+
+impl Conv<&FunctionDeclaration> for () {
+    fn conv(context: &mut Context, value: &FunctionDeclaration) -> IrResult<Self> {
+        // ignore IrError of generic function
+        let use_ir = context.config.use_ir;
+        let in_generic = context.in_generic;
+        if value.function_declaration_opt.is_some() {
+            context.config.use_ir = false;
+            context.ignore_var_func = true;
+            context.in_generic = true;
+        }
+
+        let ret: IrResult<()> = Conv::conv(context, (value, None, false));
+
+        if value.function_declaration_opt.is_some() {
+            context.config.use_ir = use_ir;
+            context.ignore_var_func = false;
+            context.in_generic = in_generic;
+            Ok(())
+        } else {
+            ret
         }
     }
 }
@@ -1275,6 +1463,19 @@ impl Conv<&ConnectDeclaration> for ir::DeclarationBlock {
     }
 }
 
+impl Conv<&UnsafeBlock> for () {
+    fn conv(context: &mut Context, value: &UnsafeBlock) -> IrResult<Self> {
+        for x in &value.unsafe_block_list {
+            let items: Vec<_> = x.generate_group.as_ref().into();
+            for item in items {
+                let item: IrResult<()> = Conv::conv(context, item);
+                context.insert_ir_error(&item);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Conv<&UnsafeBlock> for ir::DeclarationBlock {
     fn conv(context: &mut Context, value: &UnsafeBlock) -> IrResult<Self> {
         let mut ret = vec![];
@@ -1293,10 +1494,10 @@ impl Conv<&UnsafeBlock> for ir::DeclarationBlock {
     }
 }
 
-impl Conv<&ImportDeclaration> for ir::DeclarationBlock {
+impl Conv<&ImportDeclaration> for () {
     fn conv(context: &mut Context, value: &ImportDeclaration) -> IrResult<Self> {
         check_import(context, value);
-        Ok(ir::DeclarationBlock::default())
+        Ok(())
     }
 }
 

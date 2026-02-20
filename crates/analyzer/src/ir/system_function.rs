@@ -14,6 +14,12 @@ use veryl_parser::token_range::TokenRange;
 #[derive(Clone, Debug)]
 pub struct Input(Expression);
 
+impl Input {
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        self.0.resolve_func_call(context)
+    }
+}
+
 impl fmt::Display for Input {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -22,6 +28,15 @@ impl fmt::Display for Input {
 
 #[derive(Clone, Debug)]
 pub struct Output(Vec<AssignDestination>);
+
+impl Output {
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        for x in &mut self.0 {
+            x.resolve_func_call(context)?;
+        }
+        Ok(())
+    }
+}
 
 impl fmt::Display for Output {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -278,6 +293,19 @@ impl SystemFunctionCall {
         if let SystemFunctionKind::Readmemh(_, x) = &self.kind {
             for x in &x.0 {
                 x.eval_assign(context, assign_table, assign_context);
+            }
+        }
+    }
+
+    pub fn resolve_func_call(&mut self, context: &mut Context) -> IrResult<()> {
+        match &mut self.kind {
+            SystemFunctionKind::Bits(x) => x.resolve_func_call(context),
+            SystemFunctionKind::Size(x) => x.resolve_func_call(context),
+            SystemFunctionKind::Clog2(x) => x.resolve_func_call(context),
+            SystemFunctionKind::Onehot(x) => x.resolve_func_call(context),
+            SystemFunctionKind::Readmemh(x, y) => {
+                x.resolve_func_call(context)?;
+                y.resolve_func_call(context)
             }
         }
     }

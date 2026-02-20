@@ -424,6 +424,7 @@ impl AssignTable {
 mod tests {
     use super::*;
     use crate::ir::{Type, VarKind};
+    use crate::symbol::ClockDomain;
     use crate::value::ValueBigUint;
 
     #[test]
@@ -435,6 +436,7 @@ mod tests {
             VarPath::default(),
             VarKind::Variable,
             Type::default(),
+            ClockDomain::None,
             vec![],
             Affiliation::Module,
             &TokenRange::default(),

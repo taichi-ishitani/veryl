@@ -38,6 +38,7 @@ fn check_ir(code: &str, exp: &str) {
         }
     }
 
+    println!("ret\n{}exp\n{}", ir, exp);
     assert!(ir.as_str() == exp);
     assert!(errors.is_empty());
 }
@@ -465,10 +466,10 @@ fn comb_for() {
 
     let exp = r#"module ModuleA {
   var var0(a): logic<4> = 4'hx;
-  const var1([0].i): bit<32> = 32'h00000000;
-  const var2([1].i): bit<32> = 32'h00000001;
-  const var3([2].i): bit<32> = 32'h00000002;
-  const var4([3].i): bit<32> = 32'h00000003;
+  const var1(@0.[0].i): bit<32> = 32'h00000000;
+  const var2(@0.[1].i): bit<32> = 32'h00000001;
+  const var3(@0.[2].i): bit<32> = 32'h00000002;
+  const var4(@0.[3].i): bit<32> = 32'h00000003;
 
   comb {
     var0[32'h00000000] = 32'h00000001;
@@ -733,6 +734,31 @@ fn function() {
 "#;
 
     check_ir(code, exp);
+
+    let code = r#"
+    module ModuleA {
+        const A: u32 = 1;
+
+        function get_a() -> u32 {
+            return A;
+        }
+
+        const B: u32 = get_a();
+    }
+    "#;
+
+    let exp = r#"module ModuleA {
+  const var0(A): bit<32> = 32'sh00000001;
+  var var2(get_a.return): bit<32> = 32'h00000001;
+  const var3(B): bit<32> = 32'h00000001;
+  func var1(get_a) -> var2 {
+    var2 = 32'sh00000001;
+  }
+
+}
+"#;
+
+  check_ir(code, exp);
 }
 
 #[test]
@@ -754,35 +780,35 @@ fn array_literal() {
     "#;
 
     let exp = r#"module ModuleA {
-  let var0[0](a): logic = 1'hx;
-  let var0[1](a): logic = 1'hx;
-  var var1[0](b): logic = 1'hx;
-  var var1[1](b): logic = 1'hx;
-  var var1[2](b): logic = 1'hx;
-  var var1[3](b): logic = 1'hx;
-  var var1[4](b): logic = 1'hx;
-  var var1[5](b): logic = 1'hx;
-  var var2(c): logic<2, 3, 4> = 24'hxxxxxx;
-  const var3[0](X): bit<32> = 32'sh0000000a;
-  const var3[1](X): bit<32> = 32'sh0000000b;
-  const var3[2](X): bit<32> = 32'sh0000000c;
-  const var4(Y): bit<3, 4> = 12'habc;
+  const var0[0](X): bit<32> = 32'sh0000000a;
+  const var0[1](X): bit<32> = 32'sh0000000b;
+  const var0[2](X): bit<32> = 32'sh0000000c;
+  const var1(Y): bit<3, 4> = 12'habc;
+  let var2[0](a): logic = 1'hx;
+  let var2[1](a): logic = 1'hx;
+  var var3[0](b): logic = 1'hx;
+  var var3[1](b): logic = 1'hx;
+  var var3[2](b): logic = 1'hx;
+  var var3[3](b): logic = 1'hx;
+  var var3[4](b): logic = 1'hx;
+  var var3[5](b): logic = 1'hx;
+  var var4(c): logic<2, 3, 4> = 24'hxxxxxx;
 
   comb {
-    var0[32'h00000000] = 32'sh00000000;
-    var0[32'h00000001] = 32'sh00000001;
+    var2[32'h00000000] = 32'sh00000000;
+    var2[32'h00000001] = 32'sh00000001;
   }
   comb {
-    var1[32'h00000000][32'h00000000] = 32'sh00000001;
-    var1[32'h00000000][32'h00000001] = 32'sh00000002;
-    var1[32'h00000000][32'h00000002] = 32'sh00000003;
-    var1[32'h00000001][32'h00000000] = 32'sh00000004;
-    var1[32'h00000001][32'h00000001] = 32'sh00000005;
-    var1[32'h00000001][32'h00000002] = 32'sh00000006;
-    var2[32'h00000000][32'h00000000] = 32'sh00000001;
-    var2[32'h00000000][32'h00000001] = 32'sh00000002;
-    var2[32'h00000000][32'h00000002] = 32'sh00000003;
-    var2[32'h00000001] = 32'sh0000000a;
+    var3[32'h00000000][32'h00000000] = 32'sh00000001;
+    var3[32'h00000000][32'h00000001] = 32'sh00000002;
+    var3[32'h00000000][32'h00000002] = 32'sh00000003;
+    var3[32'h00000001][32'h00000000] = 32'sh00000004;
+    var3[32'h00000001][32'h00000001] = 32'sh00000005;
+    var3[32'h00000001][32'h00000002] = 32'sh00000006;
+    var4[32'h00000000][32'h00000000] = 32'sh00000001;
+    var4[32'h00000000][32'h00000001] = 32'sh00000002;
+    var4[32'h00000000][32'h00000002] = 32'sh00000003;
+    var4[32'h00000001] = 32'sh0000000a;
   }
 }
 "#;
@@ -1207,9 +1233,9 @@ fn generic_function() {
     let exp = r#"module ModuleA {
   let var2(a): logic<10> = 10'hxxx;
   var var3(b): logic<10> = 10'hxxx;
-  var var5(FuncA.return): logic<10> = 10'hxxx;
-  input var6(FuncA.x): logic<10> = 10'hxxx;
-  func var4(FuncA) -> var5 {
+  var var5(FuncA::<10>.return): logic<10> = 10'hxxx;
+  input var6(FuncA::<10>.x): logic<10> = 10'hxxx;
+  func var4(FuncA::<10>) -> var5 {
     var5 = (var6 + 32'sh00000001);
   }
 
@@ -1219,6 +1245,96 @@ fn generic_function() {
   comb {
     var3 = var4(x: var2);
   }
+}
+"#;
+
+    check_ir(code, exp);
+
+    let code = r#"
+    module ModuleA {
+        let a: logic = 1;
+        var b: logic<4>;
+        var c: logic<8>;
+
+        always_comb {
+            b = FuncA::<4>(a);
+            c = FuncA::<8>(a);
+        }
+
+        let d: logic = 1;
+
+        function FuncA::<W: u32>(
+            a: input logic,
+        ) -> logic<W> {
+            return a + d;
+        }
+    }
+    "#;
+
+    let exp = r#"module ModuleA {
+  let var0(a): logic = 1'hx;
+  var var1(b): logic<4> = 4'hx;
+  var var2(c): logic<8> = 8'hxx;
+  let var3(d): logic = 1'hx;
+  var var7(FuncA::<4>.return): logic<4> = 4'hx;
+  input var8(FuncA::<4>.a): logic = 1'hx;
+  var var10(FuncA::<8>.return): logic<8> = 8'hxx;
+  input var11(FuncA::<8>.a): logic = 1'hx;
+  func var6(FuncA::<4>) -> var7 {
+    var7 = (var8 + var3);
+  }
+  func var9(FuncA::<8>) -> var10 {
+    var10 = (var11 + var3);
+  }
+
+  comb {
+    var0 = 32'sh00000001;
+  }
+  comb {
+    var1 = var6(a: var0);
+    var2 = var9(a: var0);
+  }
+  comb {
+    var3 = 32'sh00000001;
+  }
+}
+"#;
+
+    check_ir(code, exp);
+
+    let code = r#"
+    module ModuleA {
+        function func_a::<W: u32> (
+            a: input logic<W>,
+        ) -> logic<W> {
+            return a;
+        }
+        function func_b(b: input logic<32>) -> logic<32> {
+            return func_a::<32>(b);
+        }
+        function func_c(c: input logic<32>) -> logic<32> {
+            return func_a::<32>(c);
+        }
+    }
+    "#;
+
+    let exp = r#"module ModuleA {
+  var var3(func_b.return): logic<32> = 32'hxxxxxxxx;
+  input var4(func_b.b): logic<32> = 32'hxxxxxxxx;
+  var var6(func_c.return): logic<32> = 32'hxxxxxxxx;
+  input var7(func_c.c): logic<32> = 32'hxxxxxxxx;
+  var var9(func_a::<32>.return): logic<32> = 32'hxxxxxxxx;
+  input var10(func_a::<32>.a): logic<32> = 32'hxxxxxxxx;
+  func var2(func_b) -> var3 {
+    var3 = var8(a: var4);
+  }
+  func var5(func_c) -> var6 {
+    var6 = var8(a: var7);
+  }
+  func var8(func_a::<32>) -> var9 {
+    var9 = var10;
+  }
+
 }
 "#;
 

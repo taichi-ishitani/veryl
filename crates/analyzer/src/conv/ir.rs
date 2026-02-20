@@ -2,7 +2,7 @@ use crate::conv::checker::alias::{AliasType, check_alias_target};
 use crate::conv::checker::clock_domain::check_clock_domain;
 use crate::conv::checker::generic::check_generic_bound;
 use crate::conv::checker::proto::check_proto;
-use crate::conv::utils::check_module_with_unevaluable_generic_parameters;
+use crate::conv::utils::{check_module_with_unevaluable_generic_parameters, insert_function};
 use crate::conv::{Affiliation, Context, Conv};
 use crate::ir::{self, IrResult, VarPath};
 use crate::symbol::SymbolKind;
@@ -22,6 +22,7 @@ impl Conv<&Veryl> for ir::Ir {
                 let use_ir = context.config.use_ir;
                 if item.is_generic() {
                     context.config.use_ir = false;
+                    context.in_generic = true;
                 }
 
                 match item {
@@ -94,7 +95,7 @@ impl Conv<&Veryl> for ir::Ir {
                         context.insert_ir_error(&ret);
                     }
                     DescriptionItem::ImportDeclaration(x) => {
-                        let ret: IrResult<ir::DeclarationBlock> =
+                        let ret: IrResult<()> =
                             Conv::conv(context, x.import_declaration.as_ref());
                         context.insert_ir_error(&ret);
                     }
@@ -103,6 +104,7 @@ impl Conv<&Veryl> for ir::Ir {
 
                 if item.is_generic() {
                     context.config.use_ir = use_ir;
+                    context.in_generic = false;
                 }
             }
         }
@@ -176,16 +178,25 @@ impl Conv<&ModuleDeclaration> for ir::Module {
             }
         }
 
-        for x in &value.module_declaration_list {
-            let items: Vec<_> = x.module_group.as_ref().into();
-            for item in &items {
-                let ret: IrResult<ir::DeclarationBlock> =
-                    Conv::conv(&mut context, item.generate_item.as_ref());
-                context.insert_ir_error(&ret);
+        let declaration_items: Vec<_> = value
+            .module_declaration_list
+            .iter()
+            .flat_map(|x| {
+                let list: Vec<_> = x.module_group.as_ref().into();
+                list
+            })
+            .collect();
+        for item in &declaration_items {
+            let ret: IrResult<()> = Conv::conv(&mut context, item.generate_item.as_ref());
+            context.insert_ir_error(&ret);
+        }
+        for item in &declaration_items {
+            let ret: IrResult<ir::DeclarationBlock> =
+                Conv::conv(&mut context, item.generate_item.as_ref());
+            context.insert_ir_error(&ret);
 
-                if let Ok(mut block) = ret {
-                    declarations.append(&mut block.0);
-                }
+            if let Ok(mut block) = ret {
+                declarations.append(&mut block.0);
             }
         }
 
@@ -202,9 +213,17 @@ impl Conv<&ModuleDeclaration> for ir::Module {
         }
 
         declarations.retain(|x| !x.is_null());
+        //for x in &mut declarations {
+        //    x.resolve_func_call(&mut context)?;
+        //}
+
+        let mut functions = context.functions.clone();
+        //for (_, x) in &mut functions {
+        //    x.resolve_func_call(&mut context)?;
+        //}
+
         let port_types = context.drain_port_types();
         let variables = context.drain_variables();
-        let functions = context.drain_functions();
 
         let mut ports = HashMap::default();
 
@@ -265,28 +284,59 @@ impl Conv<&InterfaceDeclaration> for ir::Interface {
             }
         }
 
-        for x in &value.interface_declaration_list {
-            let items: Vec<_> = x.interface_group.as_ref().into();
-            for item in items {
-                match item {
-                    InterfaceItem::GenerateItem(x) => {
-                        let ret: IrResult<ir::DeclarationBlock> =
-                            Conv::conv(&mut context, x.generate_item.as_ref());
-                        context.insert_ir_error(&ret);
+        let declaration_items: Vec<_> = value
+            .interface_declaration_list
+            .iter()
+            .flat_map(|x| {
+                let list: Vec<_> = x.interface_group.as_ref().into();
+                list
+            })
+            .collect();
+        for item in &declaration_items {
+            match item {
+                InterfaceItem::GenerateItem(x) => {
+                    let ret: IrResult<()> =
+                        Conv::conv(&mut context, x.generate_item.as_ref());
+                    context.insert_ir_error(&ret);
+                }
+                _ => {}
+            }
+        }
+
+        let mut declarations = vec![];
+        for item in &declaration_items {
+            match item {
+                InterfaceItem::GenerateItem(x) => {
+                    let ret: IrResult<ir::DeclarationBlock> =
+                        Conv::conv(&mut context, x.generate_item.as_ref());
+                    context.insert_ir_error(&ret);
+
+                    if let Ok(mut block) = ret {
+                        declarations.append(&mut block.0);
                     }
-                    InterfaceItem::ModportDeclaration(x) => {
-                        let ret: IrResult<()> =
-                            Conv::conv(&mut context, x.modport_declaration.as_ref());
-                        context.insert_ir_error(&ret);
-                    }
+                }
+                InterfaceItem::ModportDeclaration(x) => {
+                    let ret: IrResult<()> =
+                        Conv::conv(&mut context, x.modport_declaration.as_ref());
+                    context.insert_ir_error(&ret);
                 }
             }
         }
 
+        //for x in &mut declarations {
+        //    if !x.is_null() {
+        //        x.resolve_func_call(&mut context)?;
+        //    }
+        //}
+
+        let mut functions = context.functions.clone();
+        //for (_, x) in &mut functions {
+        //    x.resolve_func_call(&mut context)?;
+        //}
+
         let var_paths = context.drain_var_paths();
         let func_paths = context.drain_func_paths();
         let mut variables = context.drain_variables();
-        let functions = context.drain_functions();
         let modports = context.drain_modports();
 
         let variables = variables
@@ -324,37 +374,36 @@ impl Conv<&PackageDeclaration> for () {
             check_proto(&mut context, &value.identifier, &x.scoped_identifier);
         }
 
-        for x in &value.package_declaration_list {
-            let items: Vec<_> = x.package_group.as_ref().into();
-            for item in items {
-                match item {
-                    PackageItem::ConstDeclaration(x) => {
-                        let ret: IrResult<ir::Declaration> =
-                            Conv::conv(&mut context, x.const_declaration.as_ref());
+        let declaration_items: Vec<_> = value
+            .package_declaration_list
+            .iter()
+            .flat_map(|x| {
+                let list: Vec<_> = x.package_group.as_ref().into();
+                list
+            })
+            .collect();
+
+        for item in &declaration_items {
+            match item {
+                PackageItem::ConstDeclaration(x) => {
+                    let ret: IrResult<()> =
+                        Conv::conv(&mut context, x.const_declaration.as_ref());
+                    context.insert_ir_error(&ret);
+                }
+                PackageItem::FunctionDeclaration(x) => {
+                    let ret: IrResult<()> =
+                        Conv::conv(&mut context, x.function_declaration.as_ref());
+                    if x.function_declaration.function_declaration_opt.is_some() {
                         context.insert_ir_error(&ret);
                     }
-                    PackageItem::FunctionDeclaration(x) => {
-                        // ignore IrError of generic function
-                        let use_ir = context.config.use_ir;
-                        if x.function_declaration.function_declaration_opt.is_some() {
-                            context.config.use_ir = false;
-                            context.ignore_var_func = true;
-                        }
-
-                        let ret: IrResult<()> =
-                            Conv::conv(&mut context, x.function_declaration.as_ref());
-
-                        if x.function_declaration.function_declaration_opt.is_some() {
-                            context.config.use_ir = use_ir;
-                            context.ignore_var_func = false;
-                        } else {
-                            // check IrError for non-generic function
-                            context.insert_ir_error(&ret);
-                        }
-                    }
-                    _ => (),
                 }
+                _ => (),
             }
+        }
+
+        let mut functions = context.functions.clone();
+        for (_, x) in &mut functions {
+            x.resolve_func_call(&mut context)?;
         }
 
         upper_context.inherit(&mut context);
