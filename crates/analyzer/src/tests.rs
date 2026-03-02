@@ -7879,6 +7879,29 @@ fn unevaluable_value_reset_value() {
 
     let errors = analyze(code);
     assert!(errors.is_empty());
+
+    let code = r#"
+    package Pkg {
+        const W: u32 = 8;
+    }
+    module ModuleA (
+        i_clk: input clock,
+        i_rst: input reset,
+    ) {
+        import Pkg::*;
+        var _d: logic<W>;
+        always_ff {
+            if_reset {
+                _d = 0 as W;
+            } else {
+                _d = 1 as W;
+            }
+        }
+    }
+    "#;
+
+    let errors = analyze(code);
+    assert!(errors.is_empty());
 }
 
 #[test]
