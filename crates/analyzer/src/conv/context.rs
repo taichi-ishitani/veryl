@@ -58,6 +58,7 @@ pub struct Context {
     pub allow_component_as_factor: bool,
     pub in_test_module: bool,
     pub in_sequential_block: bool,
+    pub propagate_comptime: bool,
     pub in_global_func: Option<Token>,
     pub in_if_reset: bool,
     pub current_clock: Option<Comptime>,
@@ -83,6 +84,7 @@ impl Context {
         std::mem::swap(&mut self.namespaces, &mut tgt.namespaces);
         self.in_generic = tgt.in_generic;
         self.allow_component_as_factor = tgt.allow_component_as_factor;
+        self.propagate_comptime = tgt.propagate_comptime;
         self.config = tgt.config.clone();
     }
 

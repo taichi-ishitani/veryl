@@ -48,6 +48,12 @@ pub enum ForRange {
         end: usize,
         step: usize,
     },
+    /// start..end where end is a runtime variable (cannot be determined at compile time)
+    ForwardDynamic {
+        start: usize,
+        end_var: VarId,
+        step: usize,
+    },
     /// (start..end).rev() with additive step (default step=1)
     Reverse {
         start: usize,
@@ -220,6 +226,24 @@ impl fmt::Display for Statement {
                     }
                     ForRange::Reverse { start, end, .. } => {
                         writeln!(f, "for {} in rev {}..{} {{", x.var_name, start, end)?;
+                    }
+                    ForRange::ForwardDynamic {
+                        start,
+                        end_var,
+                        step,
+                    } if *step == 1 => {
+                        writeln!(f, "for {} in {}..@{:?} {{", x.var_name, start, end_var)?;
+                    }
+                    ForRange::ForwardDynamic {
+                        start,
+                        end_var,
+                        step,
+                    } => {
+                        writeln!(
+                            f,
+                            "for {} in {}..@{:?} step += {} {{",
+                            x.var_name, start, end_var, step
+                        )?;
                     }
                     ForRange::Stepped {
                         start,

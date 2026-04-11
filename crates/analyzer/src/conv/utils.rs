@@ -362,6 +362,26 @@ pub fn eval_assign_statement(
 ) -> IrResult<Vec<ir::Statement>> {
     let (comptime, expr) = expr;
 
+    // Propagate compile-time value to the destination variable so that
+    // subsequent expressions referencing this variable (e.g. for-range bounds
+    // like `for j in 0..next_n`) can observe the updated value during
+    // elaboration.  Only scalar, non-bit-selected assignments are tracked.
+    // Gated by `propagate_comptime` so that this only happens in simulation
+    // contexts; static-analysis passes leave the flag unset so that variable
+    // initial values in the IR are not affected.
+    if context.propagate_comptime
+        && dst.index.0.is_empty()
+        && dst.select.is_empty()
+        && let Ok(val) = comptime.get_value()
+        && let Some((id, path_comptime)) = context.var_paths.get_mut(&dst.path)
+    {
+        path_comptime.value = ValueVariant::Numeric(val.clone());
+        let id = *id;
+        if let Some(var) = context.variables.get_mut(&id) {
+            var.set_value(&[], val.clone(), None);
+        }
+    }
+
     if dst.comptime.clock_domain == ClockDomain::Implicit {
         let inferred = if context.is_affiliated(Affiliation::AlwaysFf) {
             context
@@ -1252,6 +1272,26 @@ pub fn build_for_range(
 ) -> IrResult<ir::ForRange> {
     let (beg, end) = eval_range(context, range)?;
 
+    // Check whether the end expression refers to a runtime variable (non-const).
+    // Only applicable to plain forward loops (no rev, no custom step).
+    // If so, record the VarId so the simulator can read the bound at runtime.
+    let end_var = if !rev && step.is_none() {
+        if let Some(x) = &range.range_opt {
+            let mut end_expr: ir::Expression = Conv::conv(context, x.expression.as_ref())?;
+            let end_comptime = end_expr.eval_comptime(context, None);
+            if !end_comptime.is_const {
+                // Extract VarId if this is a plain variable reference
+                end_expr.as_var_id()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     if let Some((op, expr)) = step {
         let mut step_expr: ir::Expression = Conv::conv(context, expr)?;
         let step_comptime = step_expr.eval_comptime(context, None);
@@ -1276,6 +1316,12 @@ pub fn build_for_range(
         Ok(ir::ForRange::Reverse {
             start: beg,
             end,
+            step: 1,
+        })
+    } else if let Some(end_var) = end_var {
+        Ok(ir::ForRange::ForwardDynamic {
+            start: beg,
+            end_var,
             step: 1,
         })
     } else {

@@ -42,6 +42,7 @@ fn build(code: &str, top: &str) -> Ir {
     let parser = Parser::parse(black_box(&code), &"").unwrap();
     let analyzer = Analyzer::new(&metadata);
     let mut context = Context::default();
+    context.propagate_comptime = true;
 
     let mut ir = air::Ir::default();
     analyzer.analyze_pass1(&"prj", &parser.veryl);

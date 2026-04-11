@@ -33,6 +33,7 @@ impl CmdBuild {
         include_tests: bool,
         quiet: bool,
         mut ir: Option<&mut veryl_analyzer::ir::Ir>,
+        propagate_comptime: bool,
     ) -> Result<bool> {
         let paths = metadata.paths(&self.opt.files, true, true)?;
 
@@ -76,6 +77,7 @@ impl CmdBuild {
         }
 
         let mut analyzer_context = veryl_analyzer::Context::default();
+        analyzer_context.propagate_comptime = propagate_comptime;
         for context in &contexts {
             if !context.skip {
                 let path = &context.path;

@@ -219,6 +219,31 @@ impl Statement {
                             i += step;
                         }
                     }
+                    SimForRange::ForwardDynamic {
+                        start,
+                        end_ptr,
+                        end_native_bytes,
+                        end_use_4state,
+                        end_width,
+                        end_signed,
+                        step,
+                    } => {
+                        let end_val = unsafe {
+                            read_native_value(
+                                *end_ptr,
+                                *end_native_bytes,
+                                *end_use_4state,
+                                *end_width,
+                                *end_signed,
+                            )
+                        };
+                        let end = end_val.to_usize().unwrap_or(0) as u64;
+                        let mut i = *start;
+                        while i < end {
+                            step_body(i);
+                            i += step;
+                        }
+                    }
                     SimForRange::Reverse { start, end, step } => {
                         let mut i = *end;
                         while i > *start {
@@ -680,6 +705,16 @@ pub enum SimForRange {
         end: u64,
         step: u64,
     },
+    /// end is read from a runtime variable at each loop invocation.
+    ForwardDynamic {
+        start: u64,
+        end_ptr: *const u8,
+        end_native_bytes: usize,
+        end_use_4state: bool,
+        end_width: u32,
+        end_signed: bool,
+        step: u64,
+    },
     Reverse {
         start: u64,
         end: u64,
@@ -693,6 +728,9 @@ pub enum SimForRange {
     },
 }
 
+// SAFETY: ForwardDynamic::end_ptr points into an exclusively-owned simulation buffer.
+unsafe impl Send for SimForRange {}
+
 #[derive(Clone, Debug)]
 pub struct ProtoForStatement {
     pub var_offset: VarOffset,
@@ -700,6 +738,10 @@ pub struct ProtoForStatement {
     pub var_native_bytes: usize,
     pub var_signed: bool,
     pub range: SimForRange,
+    /// When the loop upper bound is a runtime variable, store its location here.
+    /// `apply_values_ptr` uses this to resolve the actual pointer and produce
+    /// a `SimForRange::ForwardDynamic`.
+    pub end_var_offset: Option<(VarOffset, usize, u32, bool)>, // (offset, native_bytes, width, signed)
     pub body: Vec<ProtoStatement>,
 }
 
@@ -1163,13 +1205,42 @@ impl ProtoStatement {
                             )
                         })
                         .collect();
+                    // Resolve runtime loop bound pointer when present.
+                    let range = if let Some((end_offset, end_native_bytes, end_width, end_signed)) =
+                        x.end_var_offset
+                    {
+                        let end_ptr = if end_offset.is_ff() {
+                            ff_values_ptr.offset(end_offset.raw()) as *const u8
+                        } else {
+                            comb_values_ptr.offset(end_offset.raw()) as *const u8
+                        };
+                        let start = match &x.range {
+                            SimForRange::Forward { start, .. } => *start,
+                            _ => 0,
+                        };
+                        let step = match &x.range {
+                            SimForRange::Forward { step, .. } => *step,
+                            _ => 1,
+                        };
+                        SimForRange::ForwardDynamic {
+                            start,
+                            end_ptr,
+                            end_native_bytes,
+                            end_use_4state: use_4state,
+                            end_width,
+                            end_signed,
+                            step,
+                        }
+                    } else {
+                        x.range.clone()
+                    };
                     Statement::For(ForStatement {
                         var_ptr,
                         var_native_bytes: x.var_native_bytes,
                         var_use_4state: use_4state,
                         var_width: x.var_width,
                         var_signed: x.var_signed,
-                        range: x.range.clone(),
+                        range,
                         body,
                     })
                 }
@@ -2295,12 +2366,37 @@ impl Conv<&air::Statement> for Vec<ProtoStatement> {
                     body.extend(stmts);
                 }
 
+                let mut end_var_offset = None;
                 let range = match &x.range {
                     air::ForRange::Forward { start, end, step } => SimForRange::Forward {
                         start: *start as u64,
                         end: *end as u64,
                         step: *step as u64,
                     },
+                    air::ForRange::ForwardDynamic {
+                        start,
+                        end_var,
+                        step,
+                    } => {
+                        let scope = context.scope();
+                        let end_meta = scope
+                            .variable_meta
+                            .get(end_var)
+                            .ok_or_else(|| SimulatorError::unsupported_description(&x.token))?;
+                        let end_element = &end_meta.elements[0];
+                        end_var_offset = Some((
+                            end_element.current,
+                            end_meta.native_bytes,
+                            end_meta.width as u32,
+                            end_meta.r#type.signed,
+                        ));
+                        // Placeholder range; apply_values_ptr will replace with ForwardDynamic.
+                        SimForRange::Forward {
+                            start: *start as u64,
+                            end: 0,
+                            step: *step as u64,
+                        }
+                    }
                     air::ForRange::Reverse { start, end, step } => SimForRange::Reverse {
                         start: *start as u64,
                         end: *end as u64,
@@ -2325,6 +2421,7 @@ impl Conv<&air::Statement> for Vec<ProtoStatement> {
                     var_native_bytes,
                     var_signed,
                     range,
+                    end_var_offset,
                     body,
                 })]
             }

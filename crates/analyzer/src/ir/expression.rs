@@ -419,6 +419,19 @@ impl Expression {
         self.comptime()
     }
 
+    /// If this expression is a plain variable reference (no index or bit-select),
+    /// return its `VarId`. Used to propagate runtime loop bounds.
+    pub fn as_var_id(&self) -> Option<VarId> {
+        if let Expression::Term(factor) = self
+            && let Factor::Variable(id, index, select, _) = factor.as_ref()
+            && index.0.is_empty()
+            && select.is_empty()
+        {
+            return Some(*id);
+        }
+        None
+    }
+
     pub fn eval_assign(
         &self,
         context: &mut Context,

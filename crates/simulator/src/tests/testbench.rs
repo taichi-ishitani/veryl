@@ -221,6 +221,7 @@ fn tb_clock_reset_analyze() {
     let parser = Parser::parse(&code, &"").unwrap();
     let analyzer = Analyzer::new(&metadata);
     let mut context = Context::default();
+    context.propagate_comptime = true;
 
     let mut errors = vec![];
     let mut ir = air::Ir::default();

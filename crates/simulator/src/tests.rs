@@ -27,6 +27,7 @@ fn analyze_top(code: &str, config: &Config, top: &str) -> Result<Ir, SimulatorEr
     let parser = Parser::parse(&code, &"").unwrap();
     let analyzer = Analyzer::new(&metadata);
     let mut context = Context::default();
+    context.propagate_comptime = true;
 
     let mut errors = vec![];
     let mut ir = air::Ir::default();
@@ -86,6 +87,7 @@ fn analyze_multi_file_prj(
 
     // Pass2 for each file, accumulating IR
     let mut context = Context::default();
+    context.propagate_comptime = true;
     let mut ir = air::Ir::default();
     for ((prj, parser), analyzer) in parsers.iter().zip(analyzers.iter()) {
         all_errors.append(&mut analyzer.analyze_pass2(

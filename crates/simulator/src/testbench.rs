@@ -540,6 +540,35 @@ fn exec_one(sim: &mut Simulator, stmt: &TestbenchStatement) -> ExecResult {
                             i += step;
                         }
                     }
+                    SimForRange::ForwardDynamic {
+                        start,
+                        end_ptr,
+                        end_native_bytes,
+                        end_use_4state,
+                        end_width,
+                        end_signed,
+                        step,
+                    } => {
+                        use crate::ir::read_native_value;
+                        let end_val = unsafe {
+                            read_native_value(
+                                *end_ptr,
+                                *end_native_bytes,
+                                *end_use_4state,
+                                *end_width,
+                                *end_signed,
+                            )
+                        };
+                        let end = end_val.to_usize().unwrap_or(0) as u64;
+                        let mut i = *start;
+                        while i < end {
+                            let result = step_body(i);
+                            if result.should_stop() {
+                                return result;
+                            }
+                            i += step;
+                        }
+                    }
                     SimForRange::Reverse { start, end, step } => {
                         let mut i = *end;
                         while i > *start {
