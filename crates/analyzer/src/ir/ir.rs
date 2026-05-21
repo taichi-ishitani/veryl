@@ -1,12 +1,13 @@
 use crate::conv::Context;
 use crate::ir::{AssignDestination, Interface, Module};
 use std::fmt;
+use std::sync::Arc;
 use veryl_parser::resource_table::StrId;
 use veryl_parser::token_range::TokenRange;
 
 #[derive(Clone, Default)]
 pub struct Ir {
-    pub components: Vec<Component>,
+    pub components: Vec<Arc<Component>>,
 }
 
 impl Ir {
@@ -16,7 +17,7 @@ impl Ir {
 
     pub fn eval_assign(&mut self, context: &mut Context) {
         for x in &mut self.components {
-            x.eval_assign(context);
+            Arc::make_mut(x).eval_assign(context);
         }
     }
 }

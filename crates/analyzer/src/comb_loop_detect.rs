@@ -66,6 +66,14 @@ struct ModuleCombSummary {
     feedthrough: HashMap<VarId, HashSet<VarId>>,
 }
 
+fn get_module(ir: &Ir, index: usize) -> Option<&Module> {
+    let component = ir.components.get(index)?;
+    let Component::Module(module) = &**component else {
+        return None;
+    };
+    Some(module)
+}
+
 pub fn check(ir: &Ir) -> Vec<AnalyzerError> {
     let mut errors = Vec::new();
     let mut summaries: HashMap<StrId, ModuleCombSummary> = HashMap::default();
@@ -73,7 +81,7 @@ pub fn check(ir: &Ir) -> Vec<AnalyzerError> {
     let order = topo_order_modules(ir);
 
     for &idx in &order {
-        if let Component::Module(module) = &ir.components[idx] {
+        if let Some(module) = get_module(ir, idx) {
             // Unevaluable generic params -> empty per_decl_refs.
             if module.suppress_unassigned {
                 continue;
@@ -92,9 +100,9 @@ pub fn check(ir: &Ir) -> Vec<AnalyzerError> {
 /// (`infinite_recursion` is reported separately).
 fn topo_order_modules(ir: &Ir) -> Vec<usize> {
     let mut name_to_idx: HashMap<StrId, usize> = HashMap::default();
-    for (i, c) in ir.components.iter().enumerate() {
-        if let Component::Module(m) = c {
-            name_to_idx.insert(m.name, i);
+    for i in 0..ir.components.len() {
+        if let Some(module) = get_module(ir, i) {
+            name_to_idx.insert(module.name, i);
         }
     }
 
@@ -102,14 +110,14 @@ fn topo_order_modules(ir: &Ir) -> Vec<usize> {
     let mut deps: Vec<HashSet<usize>> = vec![HashSet::default(); n];
     let mut rev_deps: Vec<HashSet<usize>> = vec![HashSet::default(); n];
 
-    for (i, c) in ir.components.iter().enumerate() {
-        if let Component::Module(m) = c {
-            for inst in walk_insts(m) {
+    for (i, dep) in deps.iter_mut().enumerate().take(ir.components.len()) {
+        if let Some(module) = get_module(ir, i) {
+            for inst in walk_insts(module) {
                 if let Component::Module(child) = inst.component.as_ref()
                     && let Some(&child_idx) = name_to_idx.get(&child.name)
                     && child_idx != i
                 {
-                    deps[i].insert(child_idx);
+                    dep.insert(child_idx);
                     rev_deps[child_idx].insert(i);
                 }
             }
@@ -119,7 +127,7 @@ fn topo_order_modules(ir: &Ir) -> Vec<usize> {
     let mut indeg: Vec<usize> = deps.iter().map(|s| s.len()).collect();
     let mut q: VecDeque<usize> = VecDeque::new();
     for (i, _) in indeg.iter().enumerate().take(n) {
-        if matches!(ir.components.get(i), Some(Component::Module(_))) && indeg[i] == 0 {
+        if get_module(ir, i).is_some() && indeg[i] == 0 {
             q.push_back(i);
         }
     }
@@ -134,16 +142,12 @@ fn topo_order_modules(ir: &Ir) -> Vec<usize> {
         }
     }
     if order.len()
-        != ir
-            .components
-            .iter()
-            .filter(|c| matches!(c, Component::Module(_)))
+        != (0..ir.components.len())
+            .filter(|i| get_module(ir, *i).is_some())
             .count()
     {
         // Cycle in module graph -- emit imprecise reports anyway.
-        return (0..n)
-            .filter(|i| matches!(ir.components.get(*i), Some(Component::Module(_))))
-            .collect();
+        return (0..n).filter(|i| get_module(ir, *i).is_some()).collect();
     }
     order
 }

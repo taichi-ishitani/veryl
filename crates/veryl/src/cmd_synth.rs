@@ -64,7 +64,7 @@ impl CmdSynth {
             None => {
                 let mut candidate = None;
                 for c in &ir.components {
-                    if let Component::Module(m) = c
+                    if let Component::Module(m) = &**c
                         && is_user_module(m, &user_paths)
                     {
                         candidate = Some(m.name);

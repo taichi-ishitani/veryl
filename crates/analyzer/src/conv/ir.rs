@@ -2,12 +2,13 @@ use crate::conv::checker::alias::{AliasType, check_alias_target};
 use crate::conv::checker::clock_domain::check_clock_domain;
 use crate::conv::checker::generic::check_generic_bound;
 use crate::conv::checker::proto::check_proto;
-use crate::conv::utils::check_module_with_unevaluable_generic_parameters;
+use crate::conv::utils::{check_module_with_unevaluable_generic_parameters, get_component};
 use crate::conv::{Affiliation, Context, Conv};
-use crate::ir::{self, IrResult, VarPath};
+use crate::ir::{self, IrResult, Signature, VarPath};
 use crate::symbol::SymbolKind;
 use crate::symbol_table;
 use crate::{HashMap, ir_error};
+use std::sync::Arc;
 use veryl_parser::token_range::TokenRange;
 use veryl_parser::veryl_grammar_trait::*;
 
@@ -28,23 +29,23 @@ impl Conv<&Veryl> for ir::Ir {
                     DescriptionItem::DescriptionItemOptPublicDescriptionItem(x) => {
                         match x.public_description_item.as_ref() {
                             PublicDescriptionItem::ModuleDeclaration(x) => {
-                                let ret: IrResult<ir::Module> =
-                                    Conv::conv(context, x.module_declaration.as_ref());
-
-                                if let Ok(mut component) = ret {
+                                let identifier = x.module_declaration.identifier.as_ref();
+                                if let Some(mut component) = conv_component(context, identifier)
+                                    && let ir::Component::Module(m) = Arc::make_mut(&mut component)
+                                {
                                     // suppress unassigned check for modules with unevaluable generic parameters
-                                    if check_module_with_unevaluable_generic_parameters(
-                                        &x.module_declaration.identifier,
-                                    ) {
-                                        component.suppress_unassigned = true;
+                                    if check_module_with_unevaluable_generic_parameters(identifier)
+                                    {
+                                        m.suppress_unassigned = true;
                                     }
-
-                                    components.push(ir::Component::Module(component));
+                                    components.push(component);
                                 }
                             }
                             PublicDescriptionItem::InterfaceDeclaration(x) => {
-                                let _: IrResult<ir::Interface> =
-                                    Conv::conv(context, x.interface_declaration.as_ref());
+                                conv_component(
+                                    context,
+                                    x.interface_declaration.identifier.as_ref(),
+                                );
                             }
                             PublicDescriptionItem::PackageDeclaration(x) => {
                                 let _: IrResult<()> =
@@ -53,9 +54,9 @@ impl Conv<&Veryl> for ir::Ir {
                             PublicDescriptionItem::ProtoDeclaration(x) => {
                                 match x.proto_declaration.proto_declaration_group.as_ref() {
                                     ProtoDeclarationGroup::ProtoModuleDeclaration(x) => {
-                                        let _: IrResult<ir::Module> = Conv::conv(
+                                        conv_component(
                                             context,
-                                            x.proto_module_declaration.as_ref(),
+                                            x.proto_module_declaration.identifier.as_ref(),
                                         );
                                     }
                                     ProtoDeclarationGroup::ProtoInterfaceDeclaration(x) => {
@@ -102,6 +103,14 @@ impl Conv<&Veryl> for ir::Ir {
 
         Ok(ir::Ir { components })
     }
+}
+
+fn conv_component(context: &mut Context, identifier: &Identifier) -> Option<Arc<ir::Component>> {
+    let Ok(symbol) = symbol_table::resolve(identifier) else {
+        return None;
+    };
+    let sig = Signature::new(symbol.found.id);
+    get_component(context, &sig, identifier.into()).ok()
 }
 
 fn conv_global_function(context: &mut Context, value: &FunctionDeclaration) {

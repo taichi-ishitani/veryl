@@ -577,7 +577,7 @@ fn write_log_capacity(site_table: &site_table::SiteTable) -> (usize, usize) {
 
 pub fn build_ir(ir: &air::Ir, top: StrId, config: &Config) -> Result<Ir, SimulatorError> {
     for x in &ir.components {
-        if let air::Component::Module(x) = x
+        if let air::Component::Module(x) = &**x
             && top == x.name
         {
             let token = x.token;
@@ -628,7 +628,7 @@ pub fn build_ir_cached(
 
     // Cache miss: run Conv::conv
     for x in &ir.components {
-        if let air::Component::Module(x) = x
+        if let air::Component::Module(x) = &**x
             && top == x.name
         {
             let token = x.token;

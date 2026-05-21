@@ -23,7 +23,7 @@ use veryl_parser::resource_table::StrId;
 
 pub fn build_gate_ir(ir: &AnalyzerIr, top: StrId) -> Result<GateIr, SynthesizerError> {
     for c in &ir.components {
-        if let veryl_analyzer::ir::Component::Module(m) = c
+        if let veryl_analyzer::ir::Component::Module(m) = &**c
             && m.name == top
         {
             let module = conv::convert_module(m)?;
