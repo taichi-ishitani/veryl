@@ -345,8 +345,18 @@ fn walk_stmt_liveness(stmt: &ProtoStatement, c: &mut Census) {
                 walk_expr_reads(min, c);
                 walk_expr_reads(max, c);
             }
-            ProtoTbMethodKind::FileOpen { .. }
-            | ProtoTbMethodKind::FileClose
+            ProtoTbMethodKind::FileOpen { path, .. } => {
+                if let crate::ir::statement::ProtoFilePath::Handle(e) = path {
+                    walk_expr_reads(e, c);
+                }
+            }
+            ProtoTbMethodKind::RuntimeArg { name, op, .. } => {
+                walk_expr_reads(name, c);
+                if let Some(e) = op.default_expr() {
+                    walk_expr_reads(e, c);
+                }
+            }
+            ProtoTbMethodKind::FileClose
             | ProtoTbMethodKind::FileFlush
             | ProtoTbMethodKind::RandomGet { .. }
             | ProtoTbMethodKind::RandomGetSeed { .. } => {}

@@ -58,6 +58,9 @@ mod host {
             words: *const u64,
             mask_xz: *const u64,
         ) -> i32;
+        pub fn runtime_arg_count() -> u32;
+        pub fn runtime_arg_name(idx: u32, buf: *mut u8, cap: usize) -> i64;
+        pub fn runtime_arg_value(idx: u32, buf: *mut u8, cap: usize) -> i64;
     }
 }
 
@@ -203,6 +206,28 @@ unsafe extern "C" fn write_output_bits(
     unsafe { host::write_output_bits(idx, lsb, width, words, mask_xz) }
 }
 
+unsafe extern "C" fn runtime_arg_count(_: *mut sys::VrlCtx) -> u32 {
+    unsafe { host::runtime_arg_count() }
+}
+
+unsafe extern "C" fn runtime_arg_name(
+    _: *mut sys::VrlCtx,
+    idx: u32,
+    buf: *mut u8,
+    cap: usize,
+) -> i64 {
+    unsafe { host::runtime_arg_name(idx, buf, cap) }
+}
+
+unsafe extern "C" fn runtime_arg_value(
+    _: *mut sys::VrlCtx,
+    idx: u32,
+    buf: *mut u8,
+    cap: usize,
+) -> i64 {
+    unsafe { host::runtime_arg_value(idx, buf, cap) }
+}
+
 static HOST_API: sys::VrlHostApi = sys::VrlHostApi {
     size: size_of::<sys::VrlHostApi>(),
     port_index,
@@ -228,6 +253,9 @@ static HOST_API: sys::VrlHostApi = sys::VrlHostApi {
     port_direct,
     port_desc,
     write_output_bits,
+    runtime_arg_count,
+    runtime_arg_name,
+    runtime_arg_value,
 };
 
 /// One live component instance; its box pointer is the `u32` handle

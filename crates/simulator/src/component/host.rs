@@ -140,6 +140,8 @@ pub struct HostContext {
     pub time: u64,
     pub seed: u64,
     pub fired_clock: u32,
+    /// Runtime arguments of the run (`veryl test --runtime-arg`).
+    pub runtime_args: crate::runtime_arg::RuntimeArgs,
     /// Whether the simulation is four-state, surfaced to the component via
     /// `is_4state` so it can gate X/Z checks.
     pub use_4state: bool,
@@ -488,6 +490,20 @@ impl HostContext {
         self.params.iter().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
+    pub(crate) fn svc_runtime_arg_count(&self) -> u32 {
+        self.runtime_args.len() as u32
+    }
+
+    pub(crate) fn svc_runtime_arg_name(&self, idx: u32) -> Option<&str> {
+        self.runtime_args.get(idx as usize).map(|x| x.name.as_str())
+    }
+
+    pub(crate) fn svc_runtime_arg_value(&self, idx: u32) -> Option<&str> {
+        self.runtime_args
+            .get(idx as usize)
+            .and_then(|x| x.value.as_deref())
+    }
+
     pub(crate) fn svc_fail(&mut self, msg: &str) {
         let msg = self.decorate(msg);
         self.failures.push(msg);
@@ -821,6 +837,43 @@ extern "C" fn host_write_output_bits(
     }
 }
 
+/// Copies `text` into the guest buffer when it fits, returning its length
+/// (or -1 for `None`), per the `runtime_arg_name`/`runtime_arg_value`
+/// contract.
+fn copy_runtime_arg_text(text: Option<&str>, buf: *mut u8, cap: usize) -> i64 {
+    let Some(text) = text else {
+        return -1;
+    };
+    if !text.is_empty() && text.len() <= cap {
+        unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), buf, text.len()) };
+    }
+    text.len() as i64
+}
+
+extern "C" fn host_runtime_arg_count(ctx: *mut sys::VrlCtx) -> u32 {
+    unsafe { host(ctx) }.svc_runtime_arg_count()
+}
+
+extern "C" fn host_runtime_arg_name(
+    ctx: *mut sys::VrlCtx,
+    idx: u32,
+    buf: *mut u8,
+    cap: usize,
+) -> i64 {
+    let host = unsafe { host(ctx) };
+    copy_runtime_arg_text(host.svc_runtime_arg_name(idx), buf, cap)
+}
+
+extern "C" fn host_runtime_arg_value(
+    ctx: *mut sys::VrlCtx,
+    idx: u32,
+    buf: *mut u8,
+    cap: usize,
+) -> i64 {
+    let host = unsafe { host(ctx) };
+    copy_runtime_arg_text(host.svc_runtime_arg_value(idx), buf, cap)
+}
+
 static HOST_API: sys::VrlHostApi = sys::VrlHostApi {
     size: size_of::<sys::VrlHostApi>(),
     port_index: host_port_index,
@@ -846,6 +899,9 @@ static HOST_API: sys::VrlHostApi = sys::VrlHostApi {
     port_direct: host_port_direct,
     port_desc: host_port_desc,
     write_output_bits: host_write_output_bits,
+    runtime_arg_count: host_runtime_arg_count,
+    runtime_arg_name: host_runtime_arg_name,
+    runtime_arg_value: host_runtime_arg_value,
 };
 
 /// Capacity of the method return buffer; larger than the 64-bit values the
