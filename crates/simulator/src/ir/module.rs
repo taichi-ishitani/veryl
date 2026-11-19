@@ -1373,6 +1373,7 @@ fn event_comb_write_offsets(stmts: &[ProtoStatement]) -> Option<Vec<(isize, isiz
                     | K::Queue { ret, .. }
                     | K::RuntimeArg { ret, .. } => ret.is_none(),
                     K::ClockNext { .. }
+                    | K::ClockStart { .. }
                     | K::ResetAssert { .. }
                     | K::FileOpen { .. }
                     | K::FileWrite { .. }

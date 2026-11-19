@@ -5955,7 +5955,7 @@ pub fn tb_method_call(
     let mut ret_4state = false;
     let mut ret_string = false;
     let method = match (tb_kind, method_name) {
-        (TbComponentKind::ClockGen, "next") => {
+        (TbComponentKind::ClockGen, "next" | "start") => {
             let count = if let Some(ir::Arguments::Positional(ref positional)) = args
                 && !positional.is_empty()
             {
@@ -5973,7 +5973,14 @@ pub fn tb_method_call(
                 .get(&inst_name)
                 .cloned()
                 .map(Box::new);
-            TbMethod::ClockNext { count, period }
+            if method_name == "next" {
+                TbMethod::ClockNext { count, period }
+            } else {
+                TbMethod::ClockStart {
+                    max_cycles: count,
+                    period,
+                }
+            }
         }
         (TbComponentKind::ResetGen, "assert") => {
             let clock = context

@@ -271,6 +271,10 @@ pub enum ProtoTbMethodKind {
         count: Option<ProtoExpression>,
         period: Option<ProtoExpression>,
     },
+    ClockStart {
+        max_cycles: Option<ProtoExpression>,
+        period: Option<ProtoExpression>,
+    },
     ResetAssert {
         clock: StrId,
         duration: Option<ProtoExpression>,
@@ -456,6 +460,10 @@ impl ProtoComponentArg {
 pub enum TbMethodKind {
     ClockNext {
         count: Option<Expression>,
+        period: Option<Expression>,
+    },
+    ClockStart {
+        max_cycles: Option<Expression>,
         period: Option<Expression>,
     },
     ResetAssert {
@@ -1772,7 +1780,11 @@ impl ProtoStatement {
                 }
             }
             ProtoStatement::TbMethodCall { method, .. } => match method {
-                ProtoTbMethodKind::ClockNext { count, period } => {
+                ProtoTbMethodKind::ClockNext { count, period }
+                | ProtoTbMethodKind::ClockStart {
+                    max_cycles: count,
+                    period,
+                } => {
                     if let Some(c) = count {
                         c.adjust_offsets(ff_delta, comb_delta);
                     }
@@ -1982,7 +1994,11 @@ impl ProtoStatement {
                 }
             }
             ProtoStatement::TbMethodCall { method, .. } => match method {
-                ProtoTbMethodKind::ClockNext { count, period } => {
+                ProtoTbMethodKind::ClockNext { count, period }
+                | ProtoTbMethodKind::ClockStart {
+                    max_cycles: count,
+                    period,
+                } => {
                     if let Some(c) = count {
                         c.remap_offsets_with(f);
                     }
@@ -3090,7 +3106,11 @@ impl ProtoStatement {
                 ProtoStatement::Break => Statement::Break,
                 ProtoStatement::TbMethodCall { inst, method } => {
                     let method = match method {
-                        ProtoTbMethodKind::ClockNext { count, period } => {
+                        ProtoTbMethodKind::ClockNext { count, period }
+                        | ProtoTbMethodKind::ClockStart {
+                            max_cycles: count,
+                            period,
+                        } => {
                             let count = count.as_ref().map(|e| {
                                 e.apply_values_ptr(
                                     ff_values_ptr,
@@ -3109,7 +3129,14 @@ impl ProtoStatement {
                                     use_4state,
                                 )
                             });
-                            TbMethodKind::ClockNext { count, period }
+                            if matches!(method, ProtoTbMethodKind::ClockNext { .. }) {
+                                TbMethodKind::ClockNext { count, period }
+                            } else {
+                                TbMethodKind::ClockStart {
+                                    max_cycles: count,
+                                    period,
+                                }
+                            }
                         }
                         ProtoTbMethodKind::ResetAssert { clock, duration } => {
                             let duration = duration.as_ref().map(|e| {
@@ -4313,7 +4340,11 @@ impl Conv<&air::Statement> for Vec<ProtoStatement> {
                     }
                 };
                 let method = match &x.method {
-                    air::TbMethod::ClockNext { count, period } => {
+                    air::TbMethod::ClockNext { count, period }
+                    | air::TbMethod::ClockStart {
+                        max_cycles: count,
+                        period,
+                    } => {
                         let count = if let Some(expr) = count {
                             Some(Conv::conv(context, expr)?)
                         } else {
@@ -4324,7 +4355,14 @@ impl Conv<&air::Statement> for Vec<ProtoStatement> {
                         } else {
                             None
                         };
-                        ProtoTbMethodKind::ClockNext { count, period }
+                        if matches!(x.method, air::TbMethod::ClockNext { .. }) {
+                            ProtoTbMethodKind::ClockNext { count, period }
+                        } else {
+                            ProtoTbMethodKind::ClockStart {
+                                max_cycles: count,
+                                period,
+                            }
+                        }
                     }
                     air::TbMethod::ResetAssert { clock, duration } => {
                         let duration = if let Some(expr) = duration {
